@@ -187,3 +187,33 @@ h1 { font-size: clamp(26px, 3vw, 34px); letter-spacing: -.8px; color: #202a30; l
 .rule-preview-foot { display: flex; justify-content: space-between; align-items: center; color: #67a174; font-size: 8px; margin-top: 9px; }
 .rule-preview-foot span { display: flex; align-items: center; gap: 4px; }
 @media (max-width: 700px) { .account-list .connected-account { flex-wrap: wrap; } .account-list .connected-account .status-pill { margin-right: 48px; } .account-list .connected-account .compact-button { margin-right: auto; } }
+
+.builder-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 13px; margin-top: 16px; }
+.builder-card, .approval-card { background: #fff; border: 1px solid #e6e7e2; border-radius: 11px; padding: 17px; box-shadow: 0 7px 20px rgba(41,50,56,.025); }
+.builder-header { display: flex; justify-content: space-between; align-items: flex-start; color: #768285; margin-bottom: 15px; }
+.builder-header > div { flex: 1; }
+.builder-header b, .builder-header span { display: block; }
+.builder-header b { color: #354149; font-size: 12px; }
+.builder-header span { color: #a0a8a7; font-size: 9px; margin-top: 4px; }
+.builder-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-bottom: 11px; }
+.builder-card label { margin: 0; }
+.builder-card textarea { min-height: 70px; }
+.field-tip { color: #b08a42; font-size: 8px; margin-right: 4px; }
+.builder-preview { display: flex; align-items: flex-start; gap: 7px; background: #fffaf0; border: 1px dashed #ead399; border-radius: 7px; padding: 9px; color: #9b7937; font-size: 9px; line-height: 1.8; margin: 10px 0 12px; }
+.builder-card .primary-button { padding: 8px 11px; font-size: 9px; }
+.approval-item { display: flex; align-items: flex-start; gap: 9px; border-top: 1px solid #f0f0ed; padding: 12px 0; }
+.approval-avatar { width: 30px; height: 30px; flex: 0 0 auto; border-radius: 9px; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+.approval-avatar.gold { background: #b68a35; } .approval-avatar.violet { background: #8061a5; }
+.approval-copy { min-width: 0; flex: 1; }
+.approval-copy b { color: #4a565b; display: block; font-size: 10px; }
+.approval-copy small { color: #a5adad; font-size: 8px; direction: ltr; font-weight: 400; }
+.approval-copy p { color: #818b8d; font-size: 9px; line-height: 1.7; margin: 4px 0 6px; }
+.approval-actions { display: flex; align-items: center; gap: 4px; }
+.approve-button, .reject-button { border: 0; border-radius: 6px; font-size: 8px; display: inline-flex; align-items: center; gap: 3px; padding: 6px 8px; }
+.approve-button { color: #4f8c5b; background: #eaf6ec; } .reject-button { color: #ad6a67; background: #fbeeed; }
+.approval-empty { min-height: 130px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: #6ca174; }
+.approval-empty b { color: #5a6b60; font-size: 11px; } .approval-empty span { color: #a2aaa5; font-size: 9px; }
+.approval-footer { border-top: 1px solid #f0f0ed; padding-top: 10px; color: #a18248; font-size: 8px; display: flex; align-items: center; gap: 5px; }
+.saved-banner { color: #5a9264; background: #eff9f0; border: 1px solid #d5ecd8; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 6px; font-size: 9px; margin-top: 12px; }
+@media (max-width: 850px) { .builder-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .builder-fields { grid-template-columns: 1fr; } }
