@@ -7,4 +7,7 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  metaAccessToken: process.env.META_ACCESS_TOKEN ?? "",
+  metaWebhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? "",
+  metaInstagramAccountId: process.env.META_INSTAGRAM_ACCOUNT_ID ?? "",
 };
