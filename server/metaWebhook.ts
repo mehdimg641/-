@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "crypto";
 import type { Express, Request, Response } from "express";
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v21.0";
@@ -6,10 +7,35 @@ const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 type MetaEvent = {
   field?: string;
   value?: Record<string, unknown>;
+  // Instagram messaging events (entry[].messaging[]) have no field/value wrapper.
+  sender?: { id?: string };
+  recipient?: { id?: string };
+  message?: { mid?: string; text?: string; is_echo?: boolean };
 };
 
+const handledIds = new Set<string>();
+
+function alreadyHandled(id: string) {
+  if (!id) return false;
+  if (handledIds.has(id)) return true;
+  handledIds.add(id);
+  if (handledIds.size > 5000) handledIds.delete(handledIds.values().next().value as string);
+  return false;
+}
+
+export function verifyMetaSignature(rawBody: Buffer | undefined, header: unknown) {
+  const secret = process.env.META_APP_SECRET;
+  if (!secret) return false;
+  if (!rawBody || typeof header !== "string" || !header.startsWith("sha256=")) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest();
+  const actual = Buffer.from(header.slice("sha256=".length), "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 export function isMetaWebhookConfigured() {
-  return Boolean(process.env.META_WEBHOOK_VERIFY_TOKEN && process.env.META_ACCESS_TOKEN);
+  return Boolean(
+    process.env.META_WEBHOOK_VERIFY_TOKEN && process.env.META_ACCESS_TOKEN && process.env.META_APP_SECRET
+  );
 }
 
 export function getMetaWebhookChallenge(mode: unknown, token: unknown, challenge: unknown) {
@@ -47,24 +73,32 @@ async function graphRequest(path: string, body: Record<string, string>) {
 }
 
 async function handleEvent(event: MetaEvent) {
-  const value = event.value ?? {};
-  const field = stringValue(event.field);
-  const username = stringValue(value.from_username) || stringValue(value.username) || "";
-  const text = stringValue(value.message) || stringValue(value.text);
-  const responseMessage = buildPersonalizedMessage(username, text);
+  const ownId = process.env.META_INSTAGRAM_ACCOUNT_ID ?? "";
 
-  if (field === "comments" && value.comment_id) {
-    return graphRequest(`/${encodeURIComponent(String(value.comment_id))}/replies`, { message: responseMessage });
+  // Comment webhook: value = { id, text, from: { id, username }, media }
+  if (event.field === "comments" && event.value) {
+    const value = event.value;
+    const from = (value.from ?? {}) as { id?: string; username?: string };
+    const commentId = stringValue(value.id);
+    if (!commentId || (ownId && from.id === ownId) || alreadyHandled(commentId)) return { ignored: true };
+    const message = buildPersonalizedMessage(stringValue(from.username), stringValue(value.text));
+    return graphRequest(`/${encodeURIComponent(commentId)}/replies`, { message });
   }
 
-  if ((field === "messages" || field === "messaging") && value.sender_id && process.env.META_INSTAGRAM_ACCOUNT_ID) {
-    return graphRequest(`/${encodeURIComponent(process.env.META_INSTAGRAM_ACCOUNT_ID)}/messages`, {
-      recipient: JSON.stringify({ id: String(value.sender_id) }),
-      message: JSON.stringify({ text: responseMessage }),
+  // DM webhook: { sender: { id }, recipient: { id }, message: { mid, text } }
+  if (event.sender?.id && event.message?.text) {
+    const mid = event.message.mid ?? "";
+    if (event.message.is_echo || (ownId && event.sender.id === ownId) || alreadyHandled(mid)) {
+      return { ignored: true };
+    }
+    if (!ownId) return { skipped: true, reason: "META_INSTAGRAM_ACCOUNT_ID is not configured" };
+    return graphRequest(`/${encodeURIComponent(ownId)}/messages`, {
+      recipient: JSON.stringify({ id: event.sender.id }),
+      message: JSON.stringify({ text: buildPersonalizedMessage("", event.message.text) }),
     });
   }
 
-  return { ignored: true, field };
+  return { ignored: true, field: event.field };
 }
 
 export function registerMetaWebhook(app: Express) {
@@ -75,6 +109,10 @@ export function registerMetaWebhook(app: Express) {
   });
 
   app.post("/api/meta/webhook", async (req: Request, res: Response) => {
+    const rawBody = (req as unknown as { rawBody?: Buffer }).rawBody;
+    if (!verifyMetaSignature(rawBody, req.get("x-hub-signature-256"))) {
+      return res.status(401).json({ error: "Invalid signature" });
+    }
     const body = req.body as { object?: string; entry?: Array<{ changes?: MetaEvent[]; messaging?: MetaEvent[] }> };
     if (body?.object !== "instagram") return res.status(404).json({ error: "Unsupported Meta object" });
 
