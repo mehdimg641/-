@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Express, Request, Response } from "express";
+import { decideReply, holdForApproval } from "./replyRules";
 
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v21.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -47,18 +48,6 @@ function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function buildPersonalizedMessage(username: string, sourceText: string) {
-  const greeting = username ? `سلام ${username}، ` : "سلام، ";
-  const normalized = sourceText.toLowerCase();
-  if (normalized.includes("قیمت") || normalized.includes("نرخ") || normalized.includes("استعلام")) {
-    return `${greeting}برای اعلام قیمت دقیق لطفاً سایز، تناژ و شهر مقصد را دایرکت کنید.`;
-  }
-  if (normalized.includes("آنالیز") || normalized.includes("کیفیت") || normalized.includes("3sp") || normalized.includes("4sp") || normalized.includes("5sp")) {
-    return `${greeting}نوع شمش و سایز موردنظر را بفرمایید تا آنالیز و مشخصات فنی مناسب ارسال شود.`;
-  }
-  return `${greeting}درخواست شما ثبت شد. لطفاً مشخصات کامل را بفرستید تا همکار فروش راهنمایی کند.`;
-}
-
 async function graphRequest(path: string, body: Record<string, string>) {
   const token = process.env.META_ACCESS_TOKEN;
   if (!token) return { skipped: true, reason: "META_ACCESS_TOKEN is not configured" };
@@ -81,7 +70,15 @@ async function handleEvent(event: MetaEvent) {
     const from = (value.from ?? {}) as { id?: string; username?: string };
     const commentId = stringValue(value.id);
     if (!commentId || (ownId && from.id === ownId) || alreadyHandled(commentId)) return { ignored: true };
-    const message = buildPersonalizedMessage(stringValue(from.username), stringValue(value.text));
+    const username = stringValue(from.username);
+    const text = stringValue(value.text);
+    const decision = decideReply("comment", username, text);
+    if (!decision) return { ignored: true };
+    if (decision.rule.action === "approval") {
+      holdForApproval({ channel: "comment", recipient: commentId, username, text, reason: decision.rule.name });
+      return { held: true };
+    }
+    const message = decision.message;
     return graphRequest(`/${encodeURIComponent(commentId)}/replies`, { message });
   }
 
@@ -92,9 +89,15 @@ async function handleEvent(event: MetaEvent) {
       return { ignored: true };
     }
     if (!ownId) return { skipped: true, reason: "META_INSTAGRAM_ACCOUNT_ID is not configured" };
+    const decision = decideReply("dm", "", event.message.text);
+    if (!decision) return { ignored: true };
+    if (decision.rule.action === "approval") {
+      holdForApproval({ channel: "dm", recipient: event.sender.id, username: "", text: event.message.text, reason: decision.rule.name });
+      return { held: true };
+    }
     return graphRequest(`/${encodeURIComponent(ownId)}/messages`, {
       recipient: JSON.stringify({ id: event.sender.id }),
-      message: JSON.stringify({ text: buildPersonalizedMessage("", event.message.text) }),
+      message: JSON.stringify({ text: decision.message }),
     });
   }
 
