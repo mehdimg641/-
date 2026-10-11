@@ -8,6 +8,7 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   metaAccessToken: process.env.META_ACCESS_TOKEN ?? "",
+  metaAppSecret: process.env.META_APP_SECRET ?? "",
   metaWebhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? "",
   metaInstagramAccountId: process.env.META_INSTAGRAM_ACCOUNT_ID ?? "",
 };
