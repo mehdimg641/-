@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { BarChart3, ChevronLeft, Inbox, Instagram, Library, LogIn, LogOut, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
@@ -8,11 +8,12 @@ import { AutomationView } from "./inbox/AutomationView";
 import { InboxView } from "./inbox/InboxView";
 import { SettingsView } from "./inbox/SettingsView";
 import { TemplatesView } from "./inbox/TemplatesView";
-import { faNum, IconButton, relativeTime } from "./inbox/ui";
+import { errorMessage, faNum, IconButton, relativeTime } from "./inbox/ui";
 
 type Tab = "inbox" | "automation" | "templates" | "analytics" | "settings";
 
 const POLL_MS = 15_000;
+const LOCAL_AUTH = import.meta.env.VITE_AUTH_MODE === "local";
 
 const navItems: { id: Tab; label: string; icon: typeof Inbox }[] = [
   { id: "inbox", label: "صندوق ورودی", icon: Inbox },
@@ -35,9 +36,29 @@ function Gate({ title, body, action }: { title: string; body: string; action?: R
   );
 }
 
+function LoginForm() {
+  const utils = trpc.useUtils();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const login = trpc.auth.login.useMutation({ onSuccess: () => utils.auth.me.invalidate() });
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    login.mutate({ username, password });
+  };
+  return (
+    <form className="login-form" onSubmit={submit}>
+      <label>نام کاربری<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" dir="ltr" required /></label>
+      <label>رمز عبور<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" dir="ltr" required /></label>
+      {login.error && <span className="error-text">{errorMessage(login.error)}</span>}
+      <button className="primary-button" type="submit" disabled={login.isPending}><LogIn size={16} /> {login.isPending ? "در حال ورود..." : "ورود"}</button>
+    </form>
+  );
+}
+
 export default function Home() {
   const { user, loading, logout } = useAuth();
   if (loading) return <Gate title="سپند Inbox" body="در حال بارگذاری..." />;
+  if (!user && LOCAL_AUTH) return <Gate title="ورود به سپند Inbox" body="برای مشاهده پیام‌ها و پاسخ‌گویی وارد شوید." action={<LoginForm />} />;
   if (!user) {
     return <Gate title="ورود به سپند Inbox" body="برای مشاهده پیام‌ها و پاسخ‌گویی وارد شوید." action={<button className="primary-button" onClick={() => startLogin()}><LogIn size={16} /> ورود</button>} />;
   }

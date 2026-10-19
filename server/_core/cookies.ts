@@ -42,7 +42,8 @@ export function getSessionCookieOptions(
   return {
     httpOnly: true,
     path: "/",
-    sameSite: "none",
+    // Self-hosted login is same-site; "none" is only needed for the Manus preview iframe.
+    sameSite: process.env.AUTH_MODE === "local" ? "lax" : "none",
     secure: isSecureRequest(req),
   };
 }

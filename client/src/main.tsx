@@ -16,7 +16,8 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 
   const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
 
-  if (!isUnauthorized) return;
+  // Self-hosted builds show their own login form instead of redirecting to Manus.
+  if (!isUnauthorized || import.meta.env.VITE_AUTH_MODE === "local") return;
 
   startLogin();
 };

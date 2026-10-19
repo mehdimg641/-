@@ -2,6 +2,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { clientKey, isLocalAuth, LOCAL_SESSION_MS, LocalAuthError, localLogin } from "./_core/localAuth";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, publicProcedure, router } from "./_core/trpc";
 import {
@@ -101,6 +102,19 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
+    login: publicProcedure
+      .input(z.object({ username: z.string().min(1).max(100), password: z.string().min(1).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        if (!isLocalAuth()) throw new TRPCError({ code: "NOT_FOUND", message: "Local login is disabled" });
+        try {
+          const token = await localLogin(clientKey(ctx.req), input.username, input.password);
+          ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: LOCAL_SESSION_MS });
+          return { success: true } as const;
+        } catch (error) {
+          if (error instanceof LocalAuthError) throw new TRPCError({ code: error.code, message: error.message });
+          throw error;
+        }
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });

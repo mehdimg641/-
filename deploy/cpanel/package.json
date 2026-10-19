@@ -1,0 +1,14 @@
+{
+  "name": "sepand-inbox",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sepand Inbox — self-contained build for cPanel. No npm install needed.",
+  "main": "app.cjs",
+  "scripts": {
+    "start": "node app.cjs"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

@@ -150,10 +150,27 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+/** Adds the umami script only when an analytics endpoint is configured; otherwise its placeholder URL 404s. */
+function vitePluginAnalytics(): Plugin {
+  return {
+    name: "sepand-analytics",
+    transformIndexHtml() {
+      const endpoint = process.env.VITE_ANALYTICS_ENDPOINT;
+      const websiteId = process.env.VITE_ANALYTICS_WEBSITE_ID;
+      if (!endpoint || !websiteId) return [];
+      return [{ tag: "script", attrs: { defer: true, src: `${endpoint}/umami`, "data-website-id": websiteId }, injectTo: "body" }];
+    },
+  };
+}
 
-export default defineConfig({
-  plugins,
+export default defineConfig(({ command }) => ({
+  plugins: [
+    react(),
+    tailwindcss(),
+    vitePluginAnalytics(),
+    // The Manus runtime and debug tooling only make sense in the Manus dev sandbox, not in a build.
+    ...(command === "build" ? [] : [jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()]),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -184,4 +201,4 @@ export default defineConfig({
       deny: ["**/.*"],
     },
   },
-});
+}));
