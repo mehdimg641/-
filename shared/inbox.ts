@@ -1,19 +1,54 @@
 export type InboxChannel = "DM" | "کامنت";
+export type InboxKind = "comment" | "dm";
+export type ReplyStatus = "pending" | "sending" | "sent" | "rejected" | "failed";
+
+export type InboxMessage = {
+  id: string;
+  from: "contact" | "agent";
+  text: string;
+  at: Date;
+  /** Only for agent messages. */
+  status?: ReplyStatus;
+  error?: string | null;
+};
 
 export type InboxThread = {
-  id: number;
+  /** `${kind}:${senderId}` */
+  id: string;
+  kind: InboxKind;
+  channel: InboxChannel;
+  senderId: string;
   name: string;
   handle: string;
-  channel: InboxChannel;
   message: string;
-  time: string;
+  updatedAt: Date;
   tag: string;
   tagTone: string;
   unread: boolean;
-  priority?: boolean;
+  /** Has a reply waiting for operator approval. */
+  priority: boolean;
   avatar: string;
-  messages: { from: "contact" | "agent"; text: string; time: string }[];
+  /** Latest incoming event; manual replies answer this one. */
+  lastEventId: number;
+  messages: InboxMessage[];
 };
+
+export type ApprovalItem = {
+  id: number;
+  threadId: string;
+  channel: InboxChannel;
+  name: string;
+  handle: string;
+  incoming: string;
+  draft: string;
+  reason: string;
+  tone: string;
+  status: ReplyStatus;
+  error: string | null;
+  createdAt: Date;
+};
+
+export const channelOf = (kind: InboxKind): InboxChannel => (kind === "dm" ? "DM" : "کامنت");
 
 export function filterInboxThreads(
   threads: InboxThread[],

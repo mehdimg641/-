@@ -32,12 +32,13 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  // Before the JSON parser: the webhook needs the raw body to verify Meta's signature.
+  registerMetaWebhook(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
-  registerMetaWebhook(app);
   // tRPC API
   app.use(
     "/api/trpc",
