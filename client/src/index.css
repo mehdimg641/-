@@ -217,3 +217,22 @@ h1 { font-size: clamp(26px, 3vw, 34px); letter-spacing: -.8px; color: #202a30; l
 .saved-banner { color: #5a9264; background: #eff9f0; border: 1px solid #d5ecd8; border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; gap: 6px; font-size: 9px; margin-top: 12px; }
 @media (max-width: 850px) { .builder-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .builder-fields { grid-template-columns: 1fr; } }
+
+/* Live data states */
+.gate-page { min-height: 100vh; display: grid; place-items: center; background: #f6f5f1; padding: 16px; }
+.gate-card { background: #fff; border: 1px solid #e6e7e2; border-radius: 14px; padding: 32px 28px; max-width: 380px; width: 100%; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; box-shadow: 0 7px 20px rgba(41,50,56,.04); }
+.gate-card h1 { font-size: 20px; color: #26333a; }
+.gate-card p { color: #818b8d; font-size: 11px; line-height: 1.9; }
+.switch.readonly { cursor: default; opacity: .9; }
+.error-text { color: #c84d42; font-size: 9px; font-weight: 500; display: block; margin-top: 4px; }
+.message-time .error-text { display: inline; margin: 0; }
+.sent-notice.error-notice { color: #c84d42; }
+.message-bubble.failed-bubble { border: 1px dashed #e0a59f; opacity: .85; }
+.connection-status.offline { color: #b06a3a; }
+.connection-status.offline .pulse { background: #e09a5b; box-shadow: 0 0 0 4px rgba(224,154,91,.12); }
+.approval-draft { width: 100%; min-height: 54px; resize: vertical; border: 1px solid #e4e5e0; border-radius: 7px; background: #fcfcfa; color: #354047; font-size: 10px; line-height: 1.8; padding: 6px 8px; margin-bottom: 6px; }
+.approval-actions button:disabled, .send-button:disabled, .primary-button:disabled { opacity: .55; cursor: not-allowed; }
+.builder-buttons { display: flex; gap: 8px; }
+.rule-actions { display: inline-flex; gap: 10px; }
+.text-button.danger { color: #c84d42; }
+a.profile-link { text-decoration: none; }

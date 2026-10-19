@@ -10,4 +10,5 @@ export const ENV = {
   metaAccessToken: process.env.META_ACCESS_TOKEN ?? "",
   metaWebhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN ?? "",
   metaInstagramAccountId: process.env.META_INSTAGRAM_ACCOUNT_ID ?? "",
+  metaAppSecret: process.env.META_APP_SECRET ?? "",
 };
