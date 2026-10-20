@@ -21,7 +21,14 @@ main() {
   trap "rmdir '$repo/.lock'" EXIT
 
   cd "$repo"
-  git fetch -q origin deploy-php
+  # A private repository needs a read-only GitHub token, kept in a file outside the site. The
+  # helper reads it only when git asks, so the token never shows up in a command line.
+  if [ -f "$HOME/sepand-github-token" ]; then
+    git -c credential.helper= -c "credential.helper=!f() { echo username=x-access-token; printf 'password=%s\n' \"\$(tr -d ' \r\n' < \"\$HOME/sepand-github-token\")\"; }; f" \
+      fetch -q origin deploy-php
+  else
+    git fetch -q origin deploy-php
+  fi
   local new old
   new="$(git rev-parse origin/deploy-php)"
   old="$(cat .deployed 2>/dev/null || true)"

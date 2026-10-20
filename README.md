@@ -18,7 +18,24 @@
 3. ۱۰ دقیقه بعد فایل `sepand-deploy.log` را در پوشهٔ اصلی هاست (File Manager ← Home) باز کنید.
    خط `✓ deployed …` یعنی کار می‌کند. نسخهٔ فعلی سایت: `https://inbox.sepandsteel.com/version.json`
 
+## اگر مخزن GitHub خصوصی است
+هاست برای گرفتن نسخه‌ها یک توکن **فقط‌خواندنی** لازم دارد:
+1. GitHub ← Settings ← Developer settings ← Personal access tokens ← **Fine-grained tokens** ←
+   Generate new token:
+   - Repository access: **Only select repositories** ← `mehdimg641/-`
+   - Permissions ← Repository permissions ← **Contents: Read-only** (بقیه را دست نزنید)
+   - Expiration: مثلاً یک سال (قبل از انقضا یک توکن تازه بسازید و فایل را عوض کنید)
+2. cPanel ← File Manager ← پوشهٔ Home (نه داخل پوشهٔ سایت) ← **+ File** با نام
+   `sepand-github-token` ← Edit ← فقط خود توکن را paste و ذخیره کنید ←
+   راست‌کلیک ← Change Permissions ← `600`.
+3. حالا مخزن را خصوصی کنید. توکن را هیچ‌جای دیگری (چت، ایمیل، پیام) نفرستید.
+
+`update.sh` توکن را فقط وقتی git می‌خواهد از همین فایل می‌خواند؛ در دستور Cron یا تنظیمات git
+ذخیره نمی‌شود.
+
 ## خطاهای رایج
+- `Authentication failed` یا `Repository not found` بعد از خصوصی کردن مخزن: فایل
+  `sepand-github-token` نیست، توکن منقضی شده، یا دسترسی Contents: Read-only به این مخزن را ندارد.
 - `has no api/config.php`: مسیر خط آخر اشتباه است؛ باید پوشه‌ای باشد که سایت قبلاً در آن نصب شده.
 - `git: command not found` یا خطای اتصال به github.com: هاست به GitHub دسترسی ندارد یا git
   ندارد؛ به پشتیبانی هاست بگویید یا همان روش آپلود زیپ را ادامه دهید.

@@ -29,3 +29,13 @@ DirectoryIndex index.html
     Deny from all
   </IfModule>
 </FilesMatch>
+
+# The page must be revalidated so an update shows up at once; its hashed assets never change.
+<IfModule mod_headers.c>
+  <FilesMatch "^(index\.html|version\.json)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "-[A-Za-z0-9_-]{8}\.(js|css|woff2?|png|jpe?g|svg)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
