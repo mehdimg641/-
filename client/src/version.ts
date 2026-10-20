@@ -5,6 +5,7 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  { version: "1.5.1", items: ["صفحه‌های حریم خصوصی و حذف اطلاعات برای Live کردن برنامهٔ Meta (/privacy.html و /data-deletion.html)"] },
   {
     version: "1.5.0",
     items: [
