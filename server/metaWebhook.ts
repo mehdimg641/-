@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import express, { type Express, type Request, type Response } from "express";
 import { ingestEvents, sendReply } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
+import { metaSetting, refreshMetaSettings } from "./metaSettings";
 
 const WEBHOOK_PATH = "/api/meta/webhook";
 const MAX_BODY = "1mb";
@@ -47,18 +48,18 @@ function constantTimeEqual(a: string, b: string) {
 }
 
 export function isMetaWebhookConfigured() {
-  return Boolean(process.env.META_WEBHOOK_VERIFY_TOKEN && process.env.META_ACCESS_TOKEN && process.env.META_APP_SECRET);
+  return Boolean(metaSetting("META_WEBHOOK_VERIFY_TOKEN") && metaSetting("META_ACCESS_TOKEN") && metaSetting("META_APP_SECRET"));
 }
 
 export function getMetaWebhookChallenge(mode: unknown, token: unknown, challenge: unknown) {
-  const expected = process.env.META_WEBHOOK_VERIFY_TOKEN;
+  const expected = metaSetting("META_WEBHOOK_VERIFY_TOKEN");
   if (!expected || mode !== "subscribe" || typeof token !== "string" || !challenge) return null;
   return constantTimeEqual(token, expected) ? String(challenge) : null;
 }
 
 /** Validates X-Hub-Signature-256. Fails closed when META_APP_SECRET is missing. */
 export function verifyMetaSignature(rawBody: Buffer | undefined, header: unknown) {
-  const secret = process.env.META_APP_SECRET;
+  const secret = metaSetting("META_APP_SECRET");
   if (!secret || !rawBody) return false;
   if (typeof header !== "string" || !/^sha256=[a-f0-9]{64}$/i.test(header)) return false;
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
@@ -67,7 +68,7 @@ export function verifyMetaSignature(rawBody: Buffer | undefined, header: unknown
 
 /** INSTAGRAM_ACCOUNT_IDS (comma separated) or META_INSTAGRAM_ACCOUNT_ID. Empty = accept every account. */
 export function allowedAccountIds() {
-  const raw = process.env.INSTAGRAM_ACCOUNT_IDS || process.env.META_INSTAGRAM_ACCOUNT_ID || "";
+  const raw = metaSetting("INSTAGRAM_ACCOUNT_IDS") || process.env.META_INSTAGRAM_ACCOUNT_ID || "";
   return raw
     .split(",")
     .map((id) => id.trim())
@@ -125,7 +126,8 @@ export function extractEvents(body: WebhookBody): IncomingEvent[] {
 }
 
 export function registerMetaWebhook(app: Express) {
-  app.get(WEBHOOK_PATH, (req: Request, res: Response) => {
+  app.get(WEBHOOK_PATH, async (req: Request, res: Response) => {
+    await refreshMetaSettings();
     const challenge = getMetaWebhookChallenge(req.query["hub.mode"], req.query["hub.verify_token"], req.query["hub.challenge"]);
     if (challenge) return res.status(200).type("text/plain").send(challenge);
     return res.status(403).json({ error: "Invalid webhook verification token" });
@@ -135,6 +137,7 @@ export function registerMetaWebhook(app: Express) {
   // Must be registered before the global express.json() middleware.
   app.post(WEBHOOK_PATH, express.raw({ type: "*/*", limit: MAX_BODY }), async (req: Request, res: Response) => {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : undefined;
+    await refreshMetaSettings();
     if (!verifyMetaSignature(rawBody, req.get("x-hub-signature-256"))) {
       return res.status(401).json({ error: "Invalid signature" });
     }

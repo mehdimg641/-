@@ -97,3 +97,11 @@ export const replies = mysqlTable(
 
 export type Reply = typeof replies.$inferSelect;
 export type InsertReply = typeof replies.$inferInsert;
+/** Key/value settings edited from the dashboard (e.g. the Meta connection). Values are encrypted. */
+export const appSettings = mysqlTable("appSettings", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type AppSetting = typeof appSettings.$inferSelect;

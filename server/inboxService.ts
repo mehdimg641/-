@@ -4,13 +4,14 @@ import type { InboxStore } from "./inboxStore";
 import { replyToComment, sendDirectMessage } from "./metaGraph";
 import type { IncomingEvent } from "./metaWebhook";
 import { decideReply } from "./replyRules";
+import { metaSetting } from "./metaSettings";
 
 const TONES = ["orange", "gold", "blue", "green", "violet"];
 const THREAD_EVENT_LIMIT = 2000;
 
 /** Auto-sending is opt-in; by default every draft waits for an operator. */
 export function isAutoReplyEnabled() {
-  return process.env.META_AUTO_REPLY === "true";
+  return metaSetting("META_AUTO_REPLY") === "true";
 }
 
 /**

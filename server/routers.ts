@@ -16,7 +16,8 @@ import {
   sendReply,
 } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
-import { getMetaApiHost } from "./metaGraph";
+import { getMetaApiHost, testMetaConnection } from "./metaGraph";
+import { maskSecret, metaSetting, metaSettingSource, refreshMetaSettings, saveMetaSettings } from "./metaSettings";
 import { allowedAccountIds, isMetaWebhookConfigured } from "./metaWebhook";
 
 const ruleInput = z.object({
@@ -43,6 +44,7 @@ async function guard<T>(fn: () => Promise<T>) {
 // any Manus account can sign in, but only the owner (OWNER_OPEN_ID) is admin by default.
 const inboxRouter = router({
   status: adminProcedure.query(async () => {
+    await refreshMetaSettings();
     const store = await getInboxStore();
     return {
       metaConfigured: isMetaWebhookConfigured(),
@@ -97,6 +99,51 @@ const rulesRouter = router({
   }),
 });
 
+const secretField = z.string().trim().max(1000).nullable().optional();
+
+// The Meta connection, editable from the dashboard. Secrets are write-only: the client only
+// ever gets a masked preview, except the verify token, which the operator must copy into Meta.
+const settingsRouter = router({
+  meta: adminProcedure.query(async () => {
+    await refreshMetaSettings(true);
+    const secret = (key: "META_ACCESS_TOKEN" | "META_APP_SECRET") => ({ source: metaSettingSource(key), preview: maskSecret(metaSetting(key)) });
+    return {
+      accessToken: secret("META_ACCESS_TOKEN"),
+      appSecret: secret("META_APP_SECRET"),
+      verifyToken: { source: metaSettingSource("META_WEBHOOK_VERIFY_TOKEN"), value: metaSetting("META_WEBHOOK_VERIFY_TOKEN") },
+      accountIds: { source: metaSettingSource("INSTAGRAM_ACCOUNT_IDS"), value: metaSetting("INSTAGRAM_ACCOUNT_IDS") },
+      autoReply: { source: metaSettingSource("META_AUTO_REPLY"), value: isAutoReplyEnabled() },
+      apiHost: getMetaApiHost(),
+      configured: isMetaWebhookConfigured(),
+    };
+  }),
+  saveMeta: adminProcedure
+    .input(
+      z.object({
+        accessToken: secretField,
+        appSecret: secretField,
+        verifyToken: secretField,
+        accountIds: z.string().trim().regex(/^[0-9,\s]*$/, "فقط شناسه‌های عددی، جداشده با ویرگول").nullable().optional(),
+        autoReply: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      try {
+        await saveMetaSettings({
+          META_ACCESS_TOKEN: input.accessToken,
+          META_APP_SECRET: input.appSecret,
+          META_WEBHOOK_VERIFY_TOKEN: input.verifyToken,
+          INSTAGRAM_ACCOUNT_IDS: input.accountIds === undefined || input.accountIds === null ? input.accountIds : input.accountIds.replace(/\s+/g, ""),
+          META_AUTO_REPLY: input.autoReply === undefined ? undefined : input.autoReply ? "true" : "false",
+        });
+      } catch (error) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : String(error) });
+      }
+      return { success: true } as const;
+    }),
+  testMeta: adminProcedure.mutation(async () => testMetaConnection()),
+});
+
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
@@ -126,6 +173,7 @@ export const appRouter = router({
   inbox: inboxRouter,
   approvals: approvalsRouter,
   rules: rulesRouter,
+  settings: settingsRouter,
 });
 
 export type AppRouter = typeof appRouter;

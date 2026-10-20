@@ -15,6 +15,13 @@
       "when": 1792433703339,
       "tag": "0001_many_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1792493625477,
+      "tag": "0002_fluffy_raider",
+      "breakpoints": true
     }
   ]
 }
