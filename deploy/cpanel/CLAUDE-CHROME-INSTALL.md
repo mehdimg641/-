@@ -29,13 +29,25 @@ Use **Claude in Chrome** to finish installing the Sepand Inbox dashboard on my c
    - Leave the document root empty. Setup Node.js App writes its own `.htaccess` there.
 2. **Check the files.** Confirm `/home/<user>/sepand-inbox/app.cjs` and `/home/<user>/sepand-inbox/dist/index.js` (about 3.5 MB) exist. Also confirm `https://inbox.sepandsteel.com/` no longer lists them.
    - If cPanel has no **Setup Node.js App** at all, stop and tell me. The host (HostIran) would then have to enable Node.js first.
-3. **Database.**
-   - cPanel → MySQL® Databases: create a database (e.g. `<prefix>_sepand`) and a user (e.g. `<prefix>_sepand`) with a generated strong password.
-   - Add the user to the database with **ALL PRIVILEGES**.
-   - Note the full prefixed names.
+3. **Database: I already have a MySQL database.**
+   - cPanel → MySQL® Databases: list the existing databases and ask me which one to use for Sepand Inbox.
+   - In phpMyAdmin, open that database and look at its tables **without changing anything**:
+     - **Empty database:** use it.
+     - **It already has tables** (for example another app or website uses it): check whether any is named `users`, `igEvents`, `replyRules` or `replies`.
+       - If **none** of those exist, Sepand Inbox can share the database safely. Tell me and continue.
+       - If **any** of them exists, **stop and ask me**. Importing would fail or clash with the other app. Recommend creating a separate database instead (e.g. `<prefix>_sepand`). Never drop, rename or empty existing tables.
+     - If the four Sepand Inbox tables are **already all there** (a previous import), skip step 4.
+   - Database user:
+     - Do **not** change the password of a database user that another app might be using, because that would break that app.
+     - Instead, create a **new user** (e.g. `<prefix>_sepinbox`) with a generated strong password.
+     - Add it to the chosen database with **ALL PRIVILEGES**.
+     - If I tell you I know an existing user's password and want to reuse it, ask me to type it into the cPanel field myself.
+   - Note the full prefixed database and user names.
+   - The database should be utf8mb4. If phpMyAdmin → Operations shows a latin1 collation on an **empty** database, tell me. The import still creates its own tables as utf8mb4.
 4. **Schema.**
-   - cPanel → phpMyAdmin → select the new database → Import → choose `sepand-inbox/database/schema.sql` from the server. If phpMyAdmin can only upload from my computer, ask me to pick the file, or download it from File Manager first.
-   - Confirm 4 tables exist: `users`, `igEvents`, `replyRules`, `replies`.
+   - cPanel → phpMyAdmin → select the chosen database → Import → choose `sepand-inbox/database/schema.sql`. If phpMyAdmin can only upload from my computer, ask me to pick the file, or download it from File Manager first.
+   - The file only runs `CREATE TABLE` for the 4 tables. It never deletes anything.
+   - Confirm the 4 tables exist: `users`, `igEvents`, `replyRules`, `replies`. Any tables that were there before must be unchanged.
 5. **Node.js app.**
    - cPanel → Setup Node.js App → Create Application:
      - Node.js version: 18 or higher (prefer 20/22)
