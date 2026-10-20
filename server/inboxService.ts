@@ -1,7 +1,7 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
 import { channelOf, type ApprovalItem, type InboxThread } from "@shared/inbox";
 import type { InboxStore } from "./inboxStore";
-import { listMediaComments, listRecentMedia, replyToComment, sendDirectMessage, sendPrivateReply } from "./metaGraph";
+import { listMediaComments, listRecentMedia, ownUsername, replyToComment, sendDirectMessage, sendPrivateReply } from "./metaGraph";
 import type { IncomingEvent } from "./metaWebhook";
 import { decideReply } from "./replyRules";
 import { metaSetting } from "./metaSettings";
@@ -340,9 +340,19 @@ export async function postComments(store: InboxStore, mediaId: string): Promise<
  */
 export async function importPostComments(store: InboxStore, mediaId: string, accountId: string) {
   const comments = await listMediaComments(mediaId);
-  const events: IncomingEvent[] = comments
-    .filter((c) => c.fromId && c.fromId !== accountId)
-    .map((c) => ({ accountId, kind: "comment", externalId: c.id, senderId: c.fromId!, username: c.username, text: c.text, mediaId }));
+  // Meta can leave out a comment's author; then the account's own comments are recognised by username.
+  const own = comments.some((c) => !c.fromId) ? await ownUsername() : null;
+  let skippedOwn = 0;
+  const events: IncomingEvent[] = [];
+  for (const c of comments) {
+    if ((c.fromId && c.fromId === accountId) || (own && c.username === own)) {
+      skippedOwn++;
+      continue;
+    }
+    // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
+    const senderId = c.fromId ?? (c.username ? `u:${c.username}` : `c:${c.id}`);
+    events.push({ accountId, kind: "comment", externalId: c.id, senderId, username: c.username, text: c.text, mediaId });
+  }
   const result = await ingestEvents(store, events, { allowAutoSend: false });
-  return { imported: result.stored, alreadyThere: result.duplicates };
+  return { fetched: comments.length, imported: result.stored, alreadyThere: result.duplicates, own: skippedOwn };
 }

@@ -106,6 +106,16 @@ function mediaOwner() {
   return encodeURIComponent(id);
 }
 
+/** The connected account's username, or null if Meta won't say. */
+export async function ownUsername(): Promise<string | null> {
+  try {
+    const me = (await graphRequest("GET", `/${mediaOwner()}?fields=username`)) as { username?: string };
+    return me.username ?? null;
+  } catch {
+    return null;
+  }
+}
+
 type GraphPage<T> = { data?: T[]; paging?: { next?: string; cursors?: { after?: string } } };
 
 /** Follows cursor pagination up to `maxPages`. */

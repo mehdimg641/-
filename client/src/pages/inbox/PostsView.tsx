@@ -54,6 +54,17 @@ export function PostsView() {
   );
 }
 
+function importMessage(r: RouterOutputs["posts"]["importComments"]) {
+  if (!r.fetched) {
+    return "اینستاگرام برای این پست هیچ کامنتی برنگرداند. اگر پست کامنت دارد، توکن دسترسی instagram_business_manage_comments را ندارد؛ توکن را با این دسترسی دوباره بسازید و در تنظیمات ذخیره کنید.";
+  }
+  const parts = [`${faNum(r.fetched)} کامنت از اینستاگرام خوانده شد`];
+  if (r.imported) parts.push(`${faNum(r.imported)} کامنت تازه وارد شد و پیش‌نویس‌هایش در صف تأیید است (ارسال خودکار نمی‌شوند)`);
+  if (r.alreadyThere) parts.push(`${faNum(r.alreadyThere)} کامنت از قبل در برنامه بود`);
+  if (r.own) parts.push(`${faNum(r.own)} کامنت خود صفحه نادیده گرفته شد`);
+  return parts.join("؛ ") + ".";
+}
+
 /** Instagram image links expire after a while; show the placeholder until the next sync. */
 function PostImage({ url, size }: { url: string | null; size: number }) {
   const [broken, setBroken] = useState(false);
@@ -93,7 +104,7 @@ function PostDetail({ post, onClose }: { post: Post; onClose: () => void }) {
   };
   const importComments = trpc.posts.importComments.useMutation({
     onSuccess: (r) => {
-      setNotice({ ok: true, text: r.imported ? `${faNum(r.imported)} کامنت قبلی وارد شد؛ پیش‌نویس‌ها در صف تأیید هستند (ارسال خودکار نمی‌شوند).` : "کامنت جدیدی برای وارد کردن نبود." });
+      setNotice({ ok: r.fetched > 0, text: importMessage(r) });
       refresh();
     },
     onError: (e) => setNotice({ ok: false, text: errorMessage(e) }),

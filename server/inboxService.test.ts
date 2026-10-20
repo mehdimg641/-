@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRulesToUnanswered, buildThreads, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
+import { applyRulesToUnanswered, buildThreads, importPostComments, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
 import type { IncomingEvent } from "./metaWebhook";
 
@@ -156,5 +156,27 @@ describe("comment → reply + DM per post", () => {
     expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 1 });
     expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 0 });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("importPostComments", () => {
+  it("keeps comments Meta returns without an author and skips the account's own", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/comments")) {
+        return new Response(JSON.stringify({ data: [
+          { id: "c1", text: "قیمت تیرآهن؟", username: "buyer1" },
+          { id: "c2", text: "عالی", from: { id: "77", username: "fan" } },
+          { id: "c3", text: "ممنون از شما", username: "sepandsteel" },
+          { id: "c4", text: "ارسال دارید؟" },
+        ] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ username: "sepandsteel" }), { status: 200 });
+    });
+    const store = new MemoryInboxStore();
+    const result = await importPostComments(store, "m1", "acc");
+    expect(result).toEqual({ fetched: 4, imported: 3, alreadyThere: 0, own: 1 });
+    const comments = await postComments(store, "m1");
+    expect(comments.map((c) => c.threadId).sort()).toEqual(["comment:77", "comment:c:c4", "comment:u:buyer1"]);
+    expect((await importPostComments(store, "m1", "acc")).alreadyThere).toBe(3);
   });
 });
