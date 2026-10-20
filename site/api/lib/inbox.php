@@ -409,11 +409,20 @@ function post_comments(string $mediaId): array
 /** Imports a post's existing comments. Rules draft replies, but old comments always wait for approval. */
 function import_post_comments(string $mediaId, string $accountId): array
 {
+    $comments = list_media_comments($mediaId);
+    // Meta can leave out a comment's author; then the account's own comments are recognised by username.
+    $own = in_array(null, array_column($comments, 'fromId'), true) ? own_username() : null;
     $events = [];
-    foreach (list_media_comments($mediaId) as $c) {
-        if ($c['fromId'] === null || $c['fromId'] === $accountId) continue;
-        $events[] = ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $c['fromId'], 'username' => $c['username'], 'text' => $c['text'], 'mediaId' => $mediaId];
+    $skippedOwn = 0;
+    foreach ($comments as $c) {
+        if (($c['fromId'] !== null && $c['fromId'] === $accountId) || ($own !== null && $c['username'] === $own)) {
+            $skippedOwn++;
+            continue;
+        }
+        // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
+        $senderId = $c['fromId'] ?? ($c['username'] !== null ? 'u:' . $c['username'] : 'c:' . $c['id']);
+        $events[] = ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $senderId, 'username' => $c['username'], 'text' => $c['text'], 'mediaId' => $mediaId];
     }
     $result = ingest_events($events, false);
-    return ['imported' => $result['stored'], 'alreadyThere' => $result['duplicates']];
+    return ['fetched' => count($comments), 'imported' => $result['stored'], 'alreadyThere' => $result['duplicates'], 'own' => $skippedOwn];
 }

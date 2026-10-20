@@ -102,6 +102,17 @@ function media_owner(): string
     return rawurlencode($ids[0]);
 }
 
+/** The connected account's username, or null if Meta won't say. */
+function own_username(): ?string
+{
+    try {
+        $me = graph_request('GET', '/' . media_owner() . '?fields=username');
+        return isset($me['username']) ? (string) $me['username'] : null;
+    } catch (MetaApiError $e) {
+        return null;
+    }
+}
+
 /** Follows cursor pagination up to $maxPages. */
 function graph_list(string $path, int $maxPages): array
 {
