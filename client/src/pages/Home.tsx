@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, Settings2, ShieldCheck, Workflow } from "lucide-react";
+import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
@@ -10,6 +10,7 @@ import { PostsView } from "./inbox/PostsView";
 import { SettingsView } from "./inbox/SettingsView";
 import { TemplatesView } from "./inbox/TemplatesView";
 import { errorMessage, faNum, IconButton, relativeTime } from "./inbox/ui";
+import { APP_BUILD } from "@/version";
 
 type Tab = "inbox" | "posts" | "automation" | "templates" | "analytics" | "settings";
 
@@ -74,7 +75,10 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
   const [tab, setTab] = useState<Tab>("inbox");
   const [composer, setComposer] = useState("");
 
-  const status = trpc.inbox.status.useQuery();
+  // Polled so an update installed on the server is noticed without a manual refresh.
+  const status = trpc.inbox.status.useQuery(undefined, { refetchInterval: 5 * 60_000 });
+  const serverBuild = status.data?.serverVersion;
+  const stale = Boolean(serverBuild && serverBuild.commit !== APP_BUILD.commit);
   const threads = trpc.inbox.threads.useQuery(undefined, { refetchInterval: POLL_MS });
   const approvals = trpc.approvals.list.useQuery(undefined, { refetchInterval: POLL_MS });
   const stats = trpc.inbox.stats.useQuery(undefined, { enabled: tab === "analytics" });
@@ -120,6 +124,7 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             <div><b>{userName}</b><span>دسترسی کامل</span></div>
             <IconButton label="خروج" onClick={onLogout}><LogOut size={16} /></IconButton>
           </div>
+          <div className="app-version" dir="ltr" title={`ساخته شده ${new Date(APP_BUILD.builtAt).toLocaleString("fa-IR")}`}>v{APP_BUILD.version} · {APP_BUILD.commit}</div>
         </div>
       </aside>
 
@@ -131,6 +136,13 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             <div className="top-avatar">{userName.charAt(0)}</div>
           </div>
         </header>
+        {stale && (
+          <div className="update-banner">
+            <RefreshCw size={16} />
+            <span>نسخهٔ تازه‌ای روی سرور نصب شده (v{serverBuild!.version} · {serverBuild!.commit})؛ این صفحه هنوز v{APP_BUILD.version} است.</span>
+            <button className="primary-button" onClick={() => window.location.reload()}>بارگذاری نسخهٔ جدید</button>
+          </div>
+        )}
 
         {tab === "inbox" && (
           <InboxView

@@ -133,3 +133,18 @@ describe("POST /api/meta/webhook", () => {
     expect(await res.text()).toBe("42");
   });
 });
+
+describe("describePayload", () => {
+  it("lists accounts, fields and item count for the webhook log", async () => {
+    const { describePayload } = await import("./metaWebhook");
+    expect(
+      describePayload({
+        object: "instagram",
+        entry: [
+          { id: "178", changes: [{ field: "comments", value: {} }, { field: "mentions", value: {} }] },
+          { id: "179", messaging: [{ sender: { id: "1" } }] },
+        ],
+      }),
+    ).toEqual({ accounts: ["178", "179"], fields: ["comments", "mentions", "messaging"], items: 3 });
+  });
+});

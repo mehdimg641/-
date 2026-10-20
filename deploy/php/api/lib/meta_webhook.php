@@ -55,3 +55,49 @@ function extract_events(array $body): array
     }
     return $events;
 }
+
+// --- webhook log: shows in Settings whether Meta calls in and why a call was dropped ----------
+
+/** Never throws: logging must not turn a delivery into an error. */
+function record_webhook(string $method, int $status, string $outcome, string $detail = '', array $accounts = []): void
+{
+    try {
+        $pdo = db();
+        $pdo->prepare("INSERT INTO webhookLog (method, status, outcome, detail, accounts) VALUES (?, ?, ?, ?, ?)")
+            ->execute([$method, $status, $outcome, mb_substr($detail, 0, 255), mb_substr(implode(',', $accounts), 0, 255)]);
+        $pdo->exec("DELETE FROM webhookLog WHERE id < " . ((int) $pdo->lastInsertId() - 200));
+    } catch (Throwable $e) {
+        error_log('[Sepand Webhook] log failed: ' . $e->getMessage());
+    }
+}
+
+function list_webhook_log(int $limit = 20): array
+{
+    $rows = db()->query("SELECT * FROM webhookLog ORDER BY id DESC LIMIT " . $limit)->fetchAll();
+    return array_map(function ($r) {
+        return ['at' => db_time($r['at']), 'method' => $r['method'], 'status' => (int) $r['status'], 'outcome' => $r['outcome'],
+            'detail' => $r['detail'], 'accounts' => $r['accounts'] === '' ? [] : explode(',', $r['accounts'])];
+    }, $rows);
+}
+
+/** Which accounts and fields a payload carried. */
+function describe_payload(array $body): array
+{
+    $accounts = [];
+    $fields = [];
+    $items = 0;
+    foreach ($body['entry'] ?? [] as $entry) {
+        if (!is_array($entry)) continue;
+        if (isset($entry['id'])) $accounts[(string) $entry['id']] = true;
+        foreach ($entry['changes'] ?? [] as $change) {
+            $fields[(string) ($change['field'] ?? '?')] = true;
+            $items++;
+        }
+        if (!empty($entry['messaging']) && is_array($entry['messaging'])) {
+            $fields['messaging'] = true;
+            $items += count($entry['messaging']);
+        }
+    }
+    return ['accounts' => array_keys($accounts), 'fields' => array_keys($fields), 'items' => $items];
+}
+

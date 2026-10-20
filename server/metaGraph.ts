@@ -106,6 +106,30 @@ function mediaOwner() {
   return encodeURIComponent(id);
 }
 
+const WEBHOOK_FIELDS = ["comments", "messages"];
+
+function requireInstagramLogin() {
+  if (getMetaApiHost() !== "instagram") {
+    throw new MetaApiError("این بخش فقط برای توکن Instagram Login (IGAA…) است؛ در Facebook Login اشتراک از تنظیمات صفحه انجام می‌شود");
+  }
+}
+
+/** Which webhook fields Meta delivers for this account. Without a subscription no event arrives. */
+export async function getWebhookSubscription() {
+  requireInstagramLogin();
+  const result = (await graphRequest("GET", "/me/subscribed_apps")) as { data?: Array<{ subscribed_fields?: string[] }> };
+  const fields = new Set<string>();
+  for (const app of result.data ?? []) for (const field of app.subscribed_fields ?? []) fields.add(field);
+  return { fields: Array.from(fields), missing: WEBHOOK_FIELDS.filter((f) => !fields.has(f)) };
+}
+
+/** Asks Meta to deliver comment and message events for this account to the app's webhook. */
+export async function subscribeWebhooks() {
+  requireInstagramLogin();
+  await graphRequest("POST", `/me/subscribed_apps?subscribed_fields=${WEBHOOK_FIELDS.join(",")}`);
+  return getWebhookSubscription();
+}
+
 /** The connected account's username, or null if Meta won't say. */
 export async function ownUsername(): Promise<string | null> {
   try {

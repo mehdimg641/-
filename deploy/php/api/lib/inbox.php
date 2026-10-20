@@ -347,7 +347,7 @@ function sync_posts(): array
 function blank_post(string $id): array
 {
     return ['id' => $id, 'caption' => null, 'mediaType' => null, 'imageUrl' => null, 'permalink' => null, 'postedAt' => null,
-        'comments' => 0, 'pending' => 0, 'repliesSent' => 0, 'dmsSent' => 0, 'rules' => 0, 'synced' => false];
+        'comments' => 0, 'igComments' => null, 'pending' => 0, 'repliesSent' => 0, 'dmsSent' => 0, 'rules' => 0, 'synced' => false];
 }
 
 function list_posts(): array
@@ -356,7 +356,8 @@ function list_posts(): array
     $posts = [];
     foreach ($pdo->query("SELECT * FROM igMedia ORDER BY postedAt DESC")->fetchAll() as $m) {
         $posts[$m['id']] = ['caption' => $m['caption'], 'mediaType' => $m['mediaType'], 'imageUrl' => $m['thumbnailUrl'] ?: $m['mediaUrl'],
-            'permalink' => $m['permalink'], 'postedAt' => db_time($m['postedAt']), 'synced' => true] + blank_post($m['id']);
+            'permalink' => $m['permalink'], 'postedAt' => db_time($m['postedAt']),
+            'igComments' => $m['commentsCount'] === null ? null : (int) $m['commentsCount'], 'synced' => true] + blank_post($m['id']);
     }
     // Comments can arrive for posts that were never synced; list them anyway.
     foreach ($pdo->query("SELECT mediaId, COUNT(*) n FROM igEvents WHERE kind = 'comment' AND mediaId IS NOT NULL GROUP BY mediaId")->fetchAll() as $row) {

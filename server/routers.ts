@@ -21,9 +21,10 @@ import {
   sendReply,
 } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
-import { getMetaApiHost, MetaApiError, testMetaConnection } from "./metaGraph";
+import { getMetaApiHost, getWebhookSubscription, MetaApiError, subscribeWebhooks, testMetaConnection } from "./metaGraph";
 import { maskSecret, metaSetting, metaSettingSource, refreshMetaSettings, saveMetaSettings } from "./metaSettings";
 import { allowedAccountIds, isMetaWebhookConfigured } from "./metaWebhook";
+import { listWebhookLog } from "./webhookLog";
 
 const ruleInput = z.object({
   name: z.string().trim().min(1).max(120),
@@ -75,6 +76,8 @@ const inboxRouter = router({
       accountIds: allowedAccountIds(),
       persistent: store.persistent,
       lastEventAt: (await store.listEvents(1))[0]?.createdAt ?? null,
+      /** The installed build (from version.json); the Node.js package doesn't write one. */
+      serverVersion: null as { version: string; commit: string; builtAt: string } | null,
     };
   }),
   threads: adminProcedure.query(async () => buildThreads(await getInboxStore())),
@@ -213,6 +216,22 @@ const settingsRouter = router({
       return { success: true } as const;
     }),
   testMeta: adminProcedure.mutation(async () => testMetaConnection()),
+  /** Why the inbox may be empty: does Meta call in, and is the account subscribed to the webhook fields? */
+  diagnostics: adminProcedure.query(async () => {
+    const events = await (await getInboxStore()).listEvents(5000);
+    let subscription: { ok: true; fields: string[]; missing: string[] } | { ok: false; error: string };
+    try {
+      subscription = { ok: true, ...(await getWebhookSubscription()) };
+    } catch (error) {
+      subscription = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    return {
+      webhookLog: listWebhookLog(20),
+      subscription,
+      counts: { comments: events.filter((e) => e.kind === "comment").length, dms: events.filter((e) => e.kind === "dm").length },
+    };
+  }),
+  subscribeWebhooks: adminProcedure.mutation(async () => meta(subscribeWebhooks)),
 });
 
 export const appRouter = router({

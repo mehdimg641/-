@@ -21,7 +21,7 @@ INDEX="$(mktemp)"
 trap 'rm -rf "$STAGE" "$INDEX"' EXIT
 cp -R release/sepand-inbox-php "$STAGE/site"
 rm -f "$STAGE/site/.gitkeep"
-printf '{ "commit": "%s", "builtAt": "%s" }\n' "$SRC" "$(date -u +%FT%TZ)" > "$STAGE/site/version.json"
+printf '{ "version": "%s", "commit": "%s", "builtAt": "%s" }\n' "$(node -p "require('./package.json').version")" "$SRC" "$(date -u +%FT%TZ)" > "$STAGE/site/version.json"
 cp deploy/php-autodeploy/update.sh deploy/php-autodeploy/README.md "$STAGE/"
 
 parent=""

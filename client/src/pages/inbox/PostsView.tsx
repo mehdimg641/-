@@ -54,9 +54,10 @@ export function PostsView() {
   );
 }
 
-function importMessage(r: RouterOutputs["posts"]["importComments"]) {
+function importMessage(r: RouterOutputs["posts"]["importComments"], post: Post) {
   if (!r.fetched) {
-    return "اینستاگرام برای این پست هیچ کامنتی برنگرداند. اگر پست کامنت دارد، توکن دسترسی instagram_business_manage_comments را ندارد؛ توکن را با این دسترسی دوباره بسازید و در تنظیمات ذخیره کنید.";
+    if (!post.igComments) return "اینستاگرام برای این پست کامنتی گزارش نمی‌کند.";
+    return `اینستاگرام می‌گوید این پست ${faNum(post.igComments)} کامنت دارد ولی متن هیچ‌کدام را به برنامه نداد. یعنی توکن دسترسی instagram_business_manage_comments را ندارد یا برنامهٔ Meta هنوز در حالت Development است؛ توکن را با این دسترسی دوباره بسازید و در تنظیمات ذخیره کنید.`;
   }
   const parts = [`${faNum(r.fetched)} کامنت از اینستاگرام خوانده شد`];
   if (r.imported) parts.push(`${faNum(r.imported)} کامنت تازه وارد شد و پیش‌نویس‌هایش در صف تأیید است (ارسال خودکار نمی‌شوند)`);
@@ -78,7 +79,7 @@ function PostCard({ post, selected, onOpen }: { post: Post; selected: boolean; o
       <div className="post-body">
         <p>{postLabel(post)}</p>
         <div className="post-stats">
-          <span><MessageSquareText size={12} /> {faNum(post.comments)}</span>
+          <span title="واردشده در برنامه / گزارش اینستاگرام"><MessageSquareText size={12} /> {faNum(post.comments)}{post.igComments != null && post.igComments !== post.comments ? ` / ${faNum(post.igComments)}` : ""}</span>
           <span><Mail size={12} /> {faNum(post.dmsSent)}</span>
           {post.pending > 0 && <StatusPill tone="orange">{faNum(post.pending)} در انتظار</StatusPill>}
           {post.rules > 0 && <StatusPill tone="blue">{faNum(post.rules)} قانون</StatusPill>}
@@ -104,7 +105,7 @@ function PostDetail({ post, onClose }: { post: Post; onClose: () => void }) {
   };
   const importComments = trpc.posts.importComments.useMutation({
     onSuccess: (r) => {
-      setNotice({ ok: r.fetched > 0, text: importMessage(r) });
+      setNotice({ ok: r.fetched > 0, text: importMessage(r, post) });
       refresh();
     },
     onError: (e) => setNotice({ ok: false, text: errorMessage(e) }),
@@ -117,7 +118,7 @@ function PostDetail({ post, onClose }: { post: Post; onClose: () => void }) {
         <div className="post-detail-image"><PostImage url={post.imageUrl} size={24} /></div>
         <div>
           <b>{postLabel(post)}</b>
-          <span>{faNum(post.comments)} کامنت · {faNum(post.repliesSent)} پاسخ · {faNum(post.dmsSent)} دایرکت</span>
+          <span>{faNum(post.comments)} کامنت در برنامه{post.igComments != null ? ` (اینستاگرام: ${faNum(post.igComments)})` : ""} · {faNum(post.repliesSent)} پاسخ · {faNum(post.dmsSent)} دایرکت</span>
           {post.permalink && <a className="text-button" href={post.permalink} target="_blank" rel="noreferrer">مشاهده در اینستاگرام <ArrowUpLeft size={13} /></a>}
         </div>
         <button className="icon-button" aria-label="بستن" onClick={onClose}><X size={16} /></button>

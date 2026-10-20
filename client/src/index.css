@@ -311,3 +311,25 @@ a.profile-link { text-decoration: none; }
 .hero-notice { margin-top: 10px !important; color: #4c8a5a !important; }
 .template-editor { margin-bottom: 18px; }
 @media (max-width: 900px) { .posts-layout.with-detail { grid-template-columns: 1fr; } .post-detail { max-height: none; } }
+
+/* Version label and the "new version installed" banner */
+.app-version { margin-top: 10px; text-align: center; font-size: 11px; color: rgba(255, 255, 255, 0.42); letter-spacing: 0.02em; }
+.update-banner { display: flex; align-items: center; gap: 10px; margin: 16px 28px 0; padding: 10px 14px; border-radius: 12px; background: #fff7e6; border: 1px solid #f3d39a; color: #7a5310; font-size: 13px; }
+.update-banner span { flex: 1; }
+.update-banner .primary-button { padding: 7px 14px; font-size: 12px; }
+@media (max-width: 760px) { .update-banner { margin: 12px 16px 0; flex-wrap: wrap; } }
+
+/* Settings → diagnostics */
+.diagnostics-card .settings-card-head .icon-button { margin-inline-start: auto; }
+.diag-section { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line, #ece8df); }
+.diag-section > b { font-size: 11px; color: #364148; }
+.diag-section > span { font-size: 11px; color: #7c8687; }
+.diag-section .primary-button { align-self: flex-start; }
+.diag-log { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.diag-log-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 10px; }
+.diag-log-row small { color: #8a8475; min-width: 70px; }
+.diag-log-row code { flex-basis: 100%; font-size: 10px; color: #6b6558; background: #f6f3ec; padding: 4px 8px; border-radius: 6px; overflow-wrap: anywhere; text-align: left; }
+.version-list { display: flex; flex-direction: column; gap: 10px; }
+.version-list li { font-size: 10px; color: #6b6558; margin-inline-start: 16px; list-style: disc; }
+.version-list b { font-size: 11px; }
+.settings-symbol.green { color: #5a9a69; background: #e9f6eb; }

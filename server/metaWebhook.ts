@@ -3,6 +3,7 @@ import express, { type Express, type Request, type Response } from "express";
 import { ingestEvents, sendReply } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
+import { recordWebhook } from "./webhookLog";
 
 const WEBHOOK_PATH = "/api/meta/webhook";
 const MAX_BODY = "1mb";
@@ -125,11 +126,38 @@ export function extractEvents(body: WebhookBody): IncomingEvent[] {
   return events;
 }
 
+/** Which accounts and fields a payload carried, for the webhook log. */
+export function describePayload(body: WebhookBody) {
+  const accounts = new Set<string>();
+  const fields = new Set<string>();
+  let items = 0;
+  for (const entry of body.entry ?? []) {
+    if (entry.id) accounts.add(entry.id);
+    for (const change of entry.changes ?? []) {
+      fields.add(change.field ?? "?");
+      items++;
+    }
+    if (entry.messaging?.length) {
+      fields.add("messaging");
+      items += entry.messaging.length;
+    }
+  }
+  return { accounts: Array.from(accounts), fields: Array.from(fields), items };
+}
+
+function describeResult(payload: ReturnType<typeof describePayload>, kept: number, result: { stored: number; duplicates: number }) {
+  return `accounts: ${payload.accounts.join(",") || "-"} | fields: ${payload.fields.join(",") || "-"} | stored ${result.stored}, duplicate ${result.duplicates}, ignored ${payload.items - kept}`;
+}
+
 export function registerMetaWebhook(app: Express) {
   app.get(WEBHOOK_PATH, async (req: Request, res: Response) => {
     await refreshMetaSettings();
     const challenge = getMetaWebhookChallenge(req.query["hub.mode"], req.query["hub.verify_token"], req.query["hub.challenge"]);
-    if (challenge) return res.status(200).type("text/plain").send(challenge);
+    if (challenge) {
+      recordWebhook({ method: "GET", status: 200, outcome: "challenge_ok", detail: "" });
+      return res.status(200).type("text/plain").send(challenge);
+    }
+    recordWebhook({ method: "GET", status: 403, outcome: "challenge_bad_token", detail: "" });
     return res.status(403).json({ error: "Invalid webhook verification token" });
   });
 
@@ -139,6 +167,7 @@ export function registerMetaWebhook(app: Express) {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : undefined;
     await refreshMetaSettings();
     if (!verifyMetaSignature(rawBody, req.get("x-hub-signature-256"))) {
+      recordWebhook({ method: "POST", status: 401, outcome: "bad_signature", detail: "" });
       return res.status(401).json({ error: "Invalid signature" });
     }
 
@@ -146,17 +175,26 @@ export function registerMetaWebhook(app: Express) {
     try {
       body = JSON.parse(rawBody!.toString("utf8")) as WebhookBody;
     } catch {
+      recordWebhook({ method: "POST", status: 400, outcome: "bad_json", detail: "" });
       return res.status(400).json({ error: "Invalid JSON" });
     }
-    if (body?.object !== "instagram") return res.status(404).json({ error: "Unsupported Meta object" });
+    if (body?.object !== "instagram") {
+      recordWebhook({ method: "POST", status: 404, outcome: "other_object", detail: String(body?.object ?? "") });
+      return res.status(404).json({ error: "Unsupported Meta object" });
+    }
 
     // Store before acknowledging: on a storage error Meta gets a 5xx and retries later.
     let toSend: number[];
+    const payload = describePayload(body);
     try {
       const store = await getInboxStore();
-      ({ toSend } = await ingestEvents(store, extractEvents(body)));
+      const events = extractEvents(body);
+      const result = await ingestEvents(store, events);
+      toSend = result.toSend;
+      recordWebhook({ method: "POST", status: 200, outcome: "received", detail: describeResult(payload, events.length, result), accounts: payload.accounts });
     } catch (error) {
       console.error("[Meta Webhook] Failed to store events:", error);
+      recordWebhook({ method: "POST", status: 503, outcome: "error", detail: error instanceof Error ? error.message : String(error) });
       return res.status(503).set("Retry-After", "60").json({ error: "Temporarily unavailable" });
     }
 

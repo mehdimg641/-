@@ -256,6 +256,8 @@ export type PostSummary = {
   postedAt: Date | null;
   /** Comments stored in the inbox for this post. */
   comments: number;
+  /** Comment count Instagram reported at the last sync. */
+  igComments: number | null;
   pending: number;
   repliesSent: number;
   dmsSent: number;
@@ -276,9 +278,9 @@ export async function listPosts(store: InboxStore): Promise<PostSummary[]> {
   const comments = events.filter((e) => e.kind === "comment" && e.mediaId);
   const replies = await store.listReplies({ eventIds: comments.map((e) => e.id) });
   const posts = new Map<string, PostSummary>();
-  const blank = (id: string): PostSummary => ({ id, caption: null, mediaType: null, imageUrl: null, permalink: null, postedAt: null, comments: 0, pending: 0, repliesSent: 0, dmsSent: 0, rules: 0, synced: false });
+  const blank = (id: string): PostSummary => ({ id, caption: null, mediaType: null, imageUrl: null, permalink: null, postedAt: null, comments: 0, igComments: null, pending: 0, repliesSent: 0, dmsSent: 0, rules: 0, synced: false });
   for (const m of media) {
-    posts.set(m.id, { ...blank(m.id), caption: m.caption, mediaType: m.mediaType, imageUrl: m.thumbnailUrl ?? m.mediaUrl, permalink: m.permalink, postedAt: m.postedAt, synced: true });
+    posts.set(m.id, { ...blank(m.id), caption: m.caption, mediaType: m.mediaType, imageUrl: m.thumbnailUrl ?? m.mediaUrl, permalink: m.permalink, postedAt: m.postedAt, igComments: m.commentsCount ?? null, synced: true });
   }
   const postOf = new Map<number, string>();
   for (const e of comments) {
