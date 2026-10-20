@@ -69,7 +69,19 @@ function rule_input(array $in, bool $partial): array
         if (!in_array($in['action'] ?? null, ['send', 'approval'], true)) throw new ApiError('BAD_REQUEST', 'اقدام نامعتبر است');
         $out['action'] = $in['action'];
     }
-    if (!$partial || array_key_exists('template', $in)) $out['template'] = req_str($in, 'template', 1, 1000);
+    if (!$partial || array_key_exists('template', $in)) $out['template'] = req_str($in, 'template', 0, 1000);
+    if (!$partial || array_key_exists('dmTemplate', $in)) $out['dmTemplate'] = opt_str($in, 'dmTemplate', 1000);
+    foreach (['templateId', 'dmTemplateId'] as $key) {
+        if (!$partial || array_key_exists($key, $in)) $out[$key] = ($in[$key] ?? null) === null ? null : req_int($in, $key);
+    }
+    if (!$partial || array_key_exists('mediaIds', $in)) {
+        $m = $in['mediaIds'] ?? null;
+        if ($m !== null && (!is_array($m) || count($m) > 200)) throw new ApiError('BAD_REQUEST', 'پست‌ها نامعتبر است');
+        $out['mediaIds'] = $m === null ? null : array_values(array_unique(array_map(function ($id) {
+            if (!is_string($id) || !preg_match('/^[0-9A-Za-z_]{1,64}$/', $id)) throw new ApiError('BAD_REQUEST', 'شناسهٔ پست نامعتبر است');
+            return $id;
+        }, $m)));
+    }
     if (!$partial || array_key_exists('priority', $in)) {
         $p = req_int($in, 'priority');
         if ($p < 0 || $p > 10000) throw new ApiError('BAD_REQUEST', 'اولویت نامعتبر است');
@@ -80,6 +92,50 @@ function rule_input(array $in, bool $partial): array
         $out['enabled'] = $in['enabled'];
     }
     return $out;
+}
+
+/** Nullable trimmed string; empty becomes null. */
+function opt_str(array $in, string $key, int $max): ?string
+{
+    $v = $in[$key] ?? null;
+    if ($v === null) return null;
+    if (!is_string($v) || mb_strlen(trim($v)) > $max) throw new ApiError('BAD_REQUEST', "$key نامعتبر است");
+    $v = trim($v);
+    return $v === '' ? null : $v;
+}
+
+/** A rule must reply somehow: in place (text or template) or, for comments, by DM. */
+function assert_rule_replies(array $rule): void
+{
+    $inPlace = ($rule['template'] ?? '') !== '' || ($rule['templateId'] ?? null) !== null;
+    $dm = ($rule['dmTemplate'] ?? null) !== null && $rule['dmTemplate'] !== '' || ($rule['dmTemplateId'] ?? null) !== null;
+    if (!$inPlace && !$dm) throw new ApiError('BAD_REQUEST', 'متن پاسخ یا متن دایرکت (یا یک قالب) را وارد کنید');
+}
+
+function template_input(array $in, bool $partial): array
+{
+    $out = [];
+    if (!$partial || array_key_exists('title', $in)) $out['title'] = req_str($in, 'title', 1, 120);
+    if (!$partial || array_key_exists('category', $in)) $out['category'] = req_str($in, 'category', 0, 60);
+    if (!$partial || array_key_exists('text', $in)) $out['text'] = req_str($in, 'text', 1, 1000);
+    return $out;
+}
+
+/** Turns Meta errors into a message the dashboard can show. */
+function meta_call(callable $fn)
+{
+    try {
+        return $fn();
+    } catch (MetaApiError $e) {
+        throw new ApiError('PRECONDITION_FAILED', $e->getMessage());
+    }
+}
+
+function media_id_input(array $in): string
+{
+    $id = req_str($in, 'mediaId', 1, 64);
+    if (!preg_match('/^[0-9A-Za-z_]+$/', $id)) throw new ApiError('BAD_REQUEST', 'شناسهٔ پست نامعتبر است');
+    return $id;
 }
 
 /** Optional secret field: missing = keep, null = clear, string = set. */
@@ -113,7 +169,8 @@ function procedures(): array
         'system.health' => ['query', function () { return ['ok' => true]; }],
 
         'inbox.status' => ['query', $admin(function () {
-            return ['metaConfigured' => meta_configured(), 'autoReply' => auto_reply_enabled(), 'apiHost' => meta_api_host(), 'accountIds' => allowed_account_ids(), 'persistent' => true];
+            return ['metaConfigured' => meta_configured(), 'autoReply' => auto_reply_enabled(), 'apiHost' => meta_api_host(), 'accountIds' => allowed_account_ids(), 'persistent' => true,
+                'lastEventAt' => db_time(db()->query("SELECT MAX(createdAt) FROM igEvents")->fetchColumn() ?: null)];
         })],
         'inbox.threads' => ['query', $admin(function () { return build_threads(); })],
         'inbox.stats' => ['query', $admin(function () { return inbox_stats(); })],
@@ -137,15 +194,62 @@ function procedures(): array
         })],
 
         'rules.list' => ['query', $admin(function () { return list_rules(); })],
-        'rules.create' => ['mutation', $admin(function ($in) { return get_rule(insert_rule(rule_input($in, false))); })],
-        'rules.update' => ['mutation', $admin(function ($in) {
-            $rule = update_rule(req_int($in, 'id'), rule_input(in_obj($in['patch'] ?? []), true));
-            if (!$rule) throw new ApiError('NOT_FOUND', 'قانون پیدا نشد');
-            return $rule;
+        'rules.create' => ['mutation', $admin(function ($in) {
+            $rule = rule_input($in, false);
+            assert_rule_replies($rule);
+            return get_rule(insert_rule($rule));
         })],
+        'rules.update' => ['mutation', $admin(function ($in) {
+            $id = req_int($in, 'id');
+            $current = get_rule($id);
+            if (!$current) throw new ApiError('NOT_FOUND', 'قانون پیدا نشد');
+            $patch = rule_input(in_obj($in['patch'] ?? []), true);
+            assert_rule_replies(array_merge($current, $patch));
+            return update_rule($id, $patch);
+        })],
+        // Drafts replies for messages that arrived before a matching rule existed.
+        'rules.applyToUnanswered' => ['mutation', $admin(function () { return apply_rules_to_unanswered(); })],
         'rules.delete' => ['mutation', $admin(function ($in) {
             db()->prepare("DELETE FROM replyRules WHERE id = ?")->execute([req_int($in, 'id')]);
             return ['success' => true];
+        })],
+
+        'templates.list' => ['query', $admin(function () { return list_templates(); })],
+        'templates.create' => ['mutation', $admin(function ($in) {
+            $t = template_input($in, false);
+            db()->prepare("INSERT INTO replyTemplates (title, category, text) VALUES (?, ?, ?)")->execute([$t['title'], $t['category'], $t['text']]);
+            return get_template((int) db()->lastInsertId());
+        })],
+        'templates.update' => ['mutation', $admin(function ($in) {
+            $id = req_int($in, 'id');
+            $patch = template_input(in_obj($in['patch'] ?? []), true);
+            if ($patch) {
+                $sets = implode(', ', array_map(function ($f) { return "`$f` = ?"; }, array_keys($patch)));
+                db()->prepare("UPDATE replyTemplates SET $sets WHERE id = ?")->execute(array_merge(array_values($patch), [$id]));
+            }
+            $template = get_template($id);
+            if (!$template) throw new ApiError('NOT_FOUND', 'قالب پیدا نشد');
+            return $template;
+        })],
+        'templates.delete' => ['mutation', $admin(function ($in) {
+            $id = req_int($in, 'id');
+            foreach (list_rules() as $rule) {
+                if ($rule['templateId'] === $id || $rule['dmTemplateId'] === $id) {
+                    throw new ApiError('CONFLICT', "این قالب در قانون «{$rule['name']}» استفاده شده؛ ابتدا قانون را تغییر دهید");
+                }
+            }
+            db()->prepare("DELETE FROM replyTemplates WHERE id = ?")->execute([$id]);
+            return ['success' => true];
+        })],
+
+        'posts.list' => ['query', $admin(function () { return list_posts(); })],
+        'posts.sync' => ['mutation', $admin(function () { return meta_call('sync_posts'); })],
+        'posts.comments' => ['query', $admin(function ($in) { return post_comments(media_id_input($in)); })],
+        'posts.importComments' => ['mutation', $admin(function ($in) {
+            $mediaId = media_id_input($in);
+            $accountId = allowed_account_ids()[0] ?? '';
+            if ($accountId === '') throw new ApiError('PRECONDITION_FAILED', 'ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید');
+            return meta_call(function () use ($mediaId, $accountId) { return import_post_comments($mediaId, $accountId); });
         })],
 
         // Secrets are write-only: only a masked preview is returned, except the verify token,

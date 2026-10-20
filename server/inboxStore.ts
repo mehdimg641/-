@@ -1,9 +1,15 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   igEvents,
+  igMedia,
   replies,
   replyRules,
+  replyTemplates,
   type IgEvent,
+  type IgMedia,
+  type InsertIgMedia,
+  type InsertReplyTemplate,
+  type ReplyTemplate,
   type InsertIgEvent,
   type InsertReply,
   type InsertReplyRule,
@@ -11,9 +17,11 @@ import {
   type ReplyRule,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { DEFAULT_RULES } from "./replyRules";
+import { DEFAULT_RULES, DEFAULT_TEMPLATES } from "./replyRules";
 
 export type RuleInput = Omit<InsertReplyRule, "id" | "createdAt" | "updatedAt">;
+export type TemplateInput = Omit<InsertReplyTemplate, "id" | "createdAt" | "updatedAt">;
+export type MediaInput = Omit<InsertIgMedia, "syncedAt">;
 export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt">>;
 
 export interface InboxStore {
@@ -33,6 +41,12 @@ export interface InboxStore {
   /** Atomically moves a reply to "sending" if it is in one of `from`; false means someone else got it. */
   claimReply(id: number, from: Reply["status"][]): Promise<boolean>;
   listReplies(filter: { status?: Reply["status"]; eventIds?: number[] }): Promise<Reply[]>;
+  listTemplates(): Promise<ReplyTemplate[]>;
+  createTemplate(template: TemplateInput): Promise<ReplyTemplate>;
+  updateTemplate(id: number, patch: Partial<TemplateInput>): Promise<ReplyTemplate | undefined>;
+  deleteTemplate(id: number): Promise<void>;
+  upsertMedia(media: MediaInput[]): Promise<void>;
+  listMedia(): Promise<IgMedia[]>;
 }
 
 function ruleDefaults(rule: RuleInput, id: number, now: Date): ReplyRule {
@@ -43,6 +57,10 @@ function ruleDefaults(rule: RuleInput, id: number, now: Date): ReplyRule {
     channels: rule.channels,
     action: rule.action ?? "approval",
     template: rule.template,
+    templateId: rule.templateId ?? null,
+    dmTemplate: rule.dmTemplate ?? null,
+    dmTemplateId: rule.dmTemplateId ?? null,
+    mediaIds: rule.mediaIds ?? null,
     priority: rule.priority ?? 100,
     enabled: rule.enabled ?? true,
     createdAt: now,
@@ -56,11 +74,14 @@ export class MemoryInboxStore implements InboxStore {
   private events: IgEvent[] = [];
   private rules: ReplyRule[] = [];
   private replies: Reply[] = [];
+  private templates: ReplyTemplate[] = [];
+  private media = new Map<string, IgMedia>();
   private nextId = 1;
 
-  constructor(seedRules: RuleInput[] = DEFAULT_RULES) {
+  constructor(seedRules: RuleInput[] = DEFAULT_RULES, seedTemplates: TemplateInput[] = DEFAULT_TEMPLATES) {
     const now = new Date();
     this.rules = seedRules.map((rule) => ruleDefaults(rule, this.nextId++, now));
+    this.templates = seedTemplates.map((t) => ({ id: this.nextId++, title: t.title, category: t.category ?? "", text: t.text, createdAt: now, updatedAt: now }));
   }
 
   async insertEvent(event: Omit<InsertIgEvent, "id" | "createdAt" | "isRead">) {
@@ -124,6 +145,7 @@ export class MemoryInboxStore implements InboxStore {
       eventId: reply.eventId,
       ruleId: reply.ruleId ?? null,
       source: reply.source,
+      channel: reply.channel ?? "reply",
       text: reply.text,
       status: reply.status ?? "pending",
       error: reply.error ?? null,
@@ -156,6 +178,48 @@ export class MemoryInboxStore implements InboxStore {
       (r) => (!filter.status || r.status === filter.status) && (!filter.eventIds || filter.eventIds.includes(r.eventId)),
     );
   }
+
+  async listTemplates() {
+    return [...this.templates];
+  }
+
+  async createTemplate(template: TemplateInput) {
+    const now = new Date();
+    const stored: ReplyTemplate = { id: this.nextId++, title: template.title, category: template.category ?? "", text: template.text, createdAt: now, updatedAt: now };
+    this.templates.push(stored);
+    return stored;
+  }
+
+  async updateTemplate(id: number, patch: Partial<TemplateInput>) {
+    const template = this.templates.find((t) => t.id === id);
+    if (!template) return undefined;
+    Object.assign(template, patch, { updatedAt: new Date() });
+    return template;
+  }
+
+  async deleteTemplate(id: number) {
+    this.templates = this.templates.filter((t) => t.id !== id);
+  }
+
+  async upsertMedia(media: MediaInput[]) {
+    for (const m of media) {
+      this.media.set(m.id, {
+        id: m.id,
+        caption: m.caption ?? null,
+        mediaType: m.mediaType ?? null,
+        mediaUrl: m.mediaUrl ?? null,
+        thumbnailUrl: m.thumbnailUrl ?? null,
+        permalink: m.permalink ?? null,
+        postedAt: m.postedAt ?? null,
+        commentsCount: m.commentsCount ?? null,
+        syncedAt: new Date(),
+      });
+    }
+  }
+
+  async listMedia() {
+    return Array.from(this.media.values()).sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0));
+  }
 }
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
@@ -173,7 +237,12 @@ function parseJsonArray<T>(value: unknown): T[] {
 }
 
 function normalizeRule(rule: ReplyRule): ReplyRule {
-  return { ...rule, keywords: parseJsonArray(rule.keywords), channels: parseJsonArray(rule.channels) };
+  return {
+    ...rule,
+    keywords: parseJsonArray(rule.keywords),
+    channels: parseJsonArray(rule.channels),
+    mediaIds: rule.mediaIds == null ? null : parseJsonArray<string>(rule.mediaIds),
+  };
 }
 
 function isDuplicateKeyError(error: unknown) {
@@ -187,6 +256,7 @@ function isDuplicateKeyError(error: unknown) {
 export class DrizzleInboxStore implements InboxStore {
   readonly persistent = true;
   private seeded = false;
+  private templatesSeeded = false;
 
   constructor(private db: Db) {}
 
@@ -279,6 +349,42 @@ export class DrizzleInboxStore implements InboxStore {
       .from(replies)
       .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(desc(replies.createdAt));
+  }
+
+  async listTemplates() {
+    const rows = await this.db.select().from(replyTemplates).orderBy(replyTemplates.id);
+    if (rows.length > 0 || this.templatesSeeded) return rows;
+    this.templatesSeeded = true;
+    await this.db.insert(replyTemplates).values(DEFAULT_TEMPLATES);
+    return this.db.select().from(replyTemplates).orderBy(replyTemplates.id);
+  }
+
+  async createTemplate(template: TemplateInput) {
+    const [{ id }] = await this.db.insert(replyTemplates).values(template).$returningId();
+    const rows = await this.db.select().from(replyTemplates).where(eq(replyTemplates.id, id)).limit(1);
+    return rows[0];
+  }
+
+  async updateTemplate(id: number, patch: Partial<TemplateInput>) {
+    await this.db.update(replyTemplates).set(patch).where(eq(replyTemplates.id, id));
+    const rows = await this.db.select().from(replyTemplates).where(eq(replyTemplates.id, id)).limit(1);
+    return rows[0];
+  }
+
+  async deleteTemplate(id: number) {
+    this.templatesSeeded = true;
+    await this.db.delete(replyTemplates).where(eq(replyTemplates.id, id));
+  }
+
+  async upsertMedia(media: MediaInput[]) {
+    for (const m of media) {
+      const { id, ...rest } = m;
+      await this.db.insert(igMedia).values(m).onDuplicateKeyUpdate({ set: rest });
+    }
+  }
+
+  async listMedia() {
+    return this.db.select().from(igMedia).orderBy(desc(igMedia.postedAt));
   }
 }
 

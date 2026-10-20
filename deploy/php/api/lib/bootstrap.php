@@ -108,11 +108,37 @@ function ensure_schema(PDO $pdo): void
         "CREATE TABLE IF NOT EXISTS `loginFailures` (
             `ip` varchar(64) NOT NULL, `count` int NOT NULL DEFAULT 0, `resetAt` bigint NOT NULL,
             PRIMARY KEY (`ip`))",
+        "CREATE TABLE IF NOT EXISTS `replyTemplates` (
+            `id` int AUTO_INCREMENT NOT NULL, `title` varchar(120) NOT NULL, `category` varchar(60) NOT NULL DEFAULT '',
+            `text` text NOT NULL, `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`))",
+        "CREATE TABLE IF NOT EXISTS `igMedia` (
+            `id` varchar(64) NOT NULL, `caption` text, `mediaType` varchar(32), `mediaUrl` text, `thumbnailUrl` text,
+            `permalink` text, `postedAt` timestamp NULL, `commentsCount` int,
+            `syncedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`))",
     ];
-    // Cheap check first: skip the DDL once every table exists.
-    $have = $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures')")->fetchColumn();
-    if ((int) $have === count($tables)) return;
+    // Columns added after the first release; older installs get them via ALTER TABLE.
+    $columns = [
+        ['replies', 'channel', "ALTER TABLE `replies` ADD `channel` enum('reply','private') NOT NULL DEFAULT 'reply'"],
+        ['replyRules', 'templateId', "ALTER TABLE `replyRules` ADD `templateId` int NULL"],
+        ['replyRules', 'dmTemplate', "ALTER TABLE `replyRules` ADD `dmTemplate` text NULL"],
+        ['replyRules', 'dmTemplateId', "ALTER TABLE `replyRules` ADD `dmTemplateId` int NULL"],
+        ['replyRules', 'mediaIds', "ALTER TABLE `replyRules` ADD `mediaIds` json NULL"],
+    ];
+    // Cheap check first: skip the DDL once every table and column exists.
+    $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia')")->fetchColumn();
+    $haveColumns = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND (
+        (table_name = 'replies' AND column_name = 'channel') OR
+        (table_name = 'replyRules' AND column_name IN ('templateId','dmTemplate','dmTemplateId','mediaIds')))")->fetchColumn();
+    if ($haveTables === count($tables) && $haveColumns === count($columns)) return;
     foreach ($tables as $ddl) $pdo->exec($ddl . ' DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+    $check = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?");
+    foreach ($columns as [$table, $column, $ddl]) {
+        $check->execute([$table, $column]);
+        if (!(int) $check->fetchColumn()) $pdo->exec($ddl);
+    }
 }
 
 /** MySQL timestamp (UTC) → DateTimeImmutable. */

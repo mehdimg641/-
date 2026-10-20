@@ -10,6 +10,8 @@ export type InboxMessage = {
   /** Only for agent messages. */
   status?: ReplyStatus;
   error?: string | null;
+  /** "dm": a private reply sent to a commenter's inbox. */
+  via?: "dm";
 };
 
 export type InboxThread = {
@@ -42,6 +44,9 @@ export type ApprovalItem = {
   incoming: string;
   draft: string;
   reason: string;
+  /** "reply": answer in place (comment reply / DM); "private": DM to the commenter. */
+  replyChannel: "reply" | "private";
+  mediaId: string | null;
   tone: string;
   status: ReplyStatus;
   error: string | null;

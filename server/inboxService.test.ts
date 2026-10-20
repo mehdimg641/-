@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildThreads, ingestEvents, listApprovals, rejectReply, sendManualReply, sendReply } from "./inboxService";
+import { applyRulesToUnanswered, buildThreads, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
 import type { IncomingEvent } from "./metaWebhook";
 
@@ -113,5 +113,48 @@ describe("threads", () => {
     expect(updated.priority).toBe(false);
     // The comment thread's draft is untouched.
     expect((await listApprovals(store)).map((a) => a.channel)).toEqual(["کامنت"]);
+  });
+});
+
+describe("comment → reply + DM per post", () => {
+  async function storeWithPostRule() {
+    const store = new MemoryInboxStore();
+    const dmTemplate = await store.createTemplate({ title: "لیست قیمت", category: "", text: "سلام {{username}}، لیست قیمت را فرستادیم." });
+    await store.createRule({ name: "تیرآهن", keywords: ["قیمت"], channels: ["comment"], action: "send", template: "سلام {{username}}، دایرکت را ببینید 🌹", templateId: null, dmTemplate: null, dmTemplateId: dmTemplate.id, mediaIds: ["m1"], priority: 500, enabled: true });
+    return store;
+  }
+
+  it("drafts a public reply and a private DM, and sends both when auto-reply is on", async () => {
+    vi.stubEnv("META_AUTO_REPLY", "true");
+    const store = await storeWithPostRule();
+    const result = await ingestEvents(store, [comment("c1", "قیمت؟")]);
+    expect(result.toSend).toHaveLength(2);
+    for (const id of result.toSend) await sendReply(store, id, null);
+    const [publicCall, dmCall] = fetchMock.mock.calls;
+    expect(publicCall[0]).toBe("https://graph.instagram.com/v23.0/c1/replies");
+    expect(JSON.parse(publicCall[1].body)).toEqual({ message: "سلام hossein.rz، دایرکت را ببینید 🌹" });
+    expect(dmCall[0]).toBe("https://graph.instagram.com/v23.0/me/messages");
+    expect(JSON.parse(dmCall[1].body)).toEqual({ recipient: { comment_id: "c1" }, message: { text: "سلام hossein.rz، لیست قیمت را فرستادیم." } });
+  });
+
+  it("shows post comments with both replies and counts them per post", async () => {
+    const store = await storeWithPostRule();
+    await ingestEvents(store, [comment("c1", "قیمت؟")]);
+    const [item] = await postComments(store, "m1");
+    expect(item.replies.map((r) => r.channel)).toEqual(["reply", "private"]);
+    expect((await listApprovals(store)).map((a) => a.replyChannel)).toEqual(["reply", "private"]);
+    const [post] = await listPosts(store);
+    expect(post).toMatchObject({ id: "m1", comments: 1, pending: 2, rules: 1, synced: false });
+  });
+
+  it("drafts replies for messages that arrived before the rule existed, without sending", async () => {
+    vi.stubEnv("META_AUTO_REPLY", "true");
+    const store = new MemoryInboxStore([]);
+    await ingestEvents(store, [comment("c1", "قیمت؟")]);
+    expect(await listApprovals(store)).toHaveLength(0);
+    await store.createRule({ name: "قیمت", keywords: ["قیمت"], channels: ["comment"], action: "send", template: "سلام", templateId: null, dmTemplate: null, dmTemplateId: null, mediaIds: null, priority: 10, enabled: true });
+    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 1 });
+    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

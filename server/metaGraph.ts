@@ -92,3 +92,57 @@ export async function testMetaConnection(): Promise<MetaConnectionTest> {
     return { ok: false, host, error: error instanceof Error ? error.message : String(error) };
   }
 }
+
+/** DM to the author of a comment (Instagram "private reply"); allowed once per comment, within 7 days. */
+export function sendPrivateReply(commentId: string, text: string) {
+  return graphRequest("POST", `/me/messages`, { recipient: { comment_id: commentId }, message: { text } });
+}
+
+/** The account whose media to list: "me" with an Instagram Login token, else the configured IG account id. */
+function mediaOwner() {
+  if (getMetaApiHost() === "instagram") return "me";
+  const id = metaSetting("INSTAGRAM_ACCOUNT_IDS").split(",")[0]?.trim();
+  if (!id) throw new MetaApiError("ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید (تست اتصال آن را پر می‌کند)");
+  return encodeURIComponent(id);
+}
+
+type GraphPage<T> = { data?: T[]; paging?: { next?: string; cursors?: { after?: string } } };
+
+/** Follows cursor pagination up to `maxPages`. */
+async function graphList<T>(path: string, maxPages: number) {
+  const items: T[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const sep = path.includes("?") ? "&" : "?";
+    const result = (await graphRequest("GET", after ? `${path}${sep}after=${encodeURIComponent(after)}` : path)) as GraphPage<T>;
+    items.push(...(result.data ?? []));
+    after = result.paging?.next ? result.paging.cursors?.after : undefined;
+    if (!after) break;
+  }
+  return items;
+}
+
+/** Recent posts of the connected account, newest first. */
+export async function listRecentMedia() {
+  type Media = { id: string; caption?: string; media_type?: string; media_url?: string; thumbnail_url?: string; permalink?: string; timestamp?: string; comments_count?: number };
+  const media = await graphList<Media>(`/${mediaOwner()}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count&limit=50`, 2);
+  return media.map((m) => ({
+    id: String(m.id),
+    caption: m.caption ?? null,
+    mediaType: m.media_type ?? null,
+    mediaUrl: m.media_url ?? null,
+    thumbnailUrl: m.thumbnail_url ?? null,
+    permalink: m.permalink ?? null,
+    postedAt: m.timestamp ? new Date(m.timestamp) : null,
+    commentsCount: m.comments_count ?? null,
+  }));
+}
+
+/** Top-level comments of a post (up to 200). */
+export async function listMediaComments(mediaId: string) {
+  type Comment = { id: string; text?: string; timestamp?: string; username?: string; from?: { id?: string; username?: string } };
+  const comments = await graphList<Comment>(`/${encodeURIComponent(mediaId)}/comments?fields=id,text,timestamp,username,from&limit=50`, 4);
+  return comments
+    .filter((c) => c.text)
+    .map((c) => ({ id: String(c.id), text: c.text!, username: c.from?.username ?? c.username ?? null, fromId: c.from?.id ? String(c.from.id) : null }));
+}

@@ -2,7 +2,7 @@ import { AlertCircle, CheckCircle2, Database, Globe2, Instagram, ShieldCheck } f
 import { trpc } from "@/lib/trpc";
 import { MetaConnectionCard } from "./MetaConnectionCard";
 import type { InboxStatus } from "./types";
-import { errorMessage, StatusPill, Switch } from "./ui";
+import { errorMessage, relativeTime, StatusPill, Switch } from "./ui";
 
 function Row({ title, detail, ok, onToggle }: { title: string; detail: string; ok: boolean; onToggle?: () => void }) {
   return (
@@ -54,6 +54,11 @@ export function SettingsView({ status }: { status: InboxStatus | undefined }) {
             {!status?.metaConfigured && <div className="settings-warning"><AlertCircle size={16} /><span>برای دریافت و ارسال واقعی، توکن دسترسی، App Secret و Verify Token را در کارت «اتصال اینستاگرام» وارد کنید.</span></div>}
           </div>
           <MetaConnectionCard />
+          <div className="settings-card compact-info">
+            <div className="settings-card-head"><div className="settings-symbol gold"><Instagram size={19} /></div><div><h3>آخرین پیام دریافت‌شده از Meta</h3><span>اگر کامنت یا دایرکت تازه‌ای گذاشتید و این زمان تغییر نکرد، Meta رویداد را نفرستاده است</span></div></div>
+            <div className="timezone-line"><span>{status?.lastEventAt ? relativeTime(status.lastEventAt) : "هنوز هیچ پیامی نرسیده"}</span><span dir="ltr">{status?.lastEventAt ? status.lastEventAt.toLocaleString("fa-IR") : "—"}</span></div>
+            {!status?.lastEventAt && <div className="settings-warning"><AlertCircle size={16} /><span>اگر برنامهٔ Meta در حالت Development است، فقط رویداد حساب‌هایی که در App roles (Admin/Tester) هستند ارسال می‌شود. برای کامنت‌های همهٔ کاربران، برنامه باید Live باشد و دسترسی instagram_business_manage_comments و instagram_business_manage_messages تأیید شده باشد.</span></div>}
+          </div>
         </div>
         <div className="settings-column">
           <div className="settings-card">

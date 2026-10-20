@@ -156,7 +156,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
                     <div className="bubble-wrap">
                       <div className={`message-bubble ${message.from === "agent" ? "agent-bubble" : "contact-bubble"} ${message.status === "failed" ? "failed-bubble" : ""}`}>{message.text}</div>
                       <span className="message-time">
-                        {message.from === "agent" ? "پاسخ سپند" : selectedThread.name} · {clock(message.at)}
+                        {message.from === "agent" ? (message.via === "dm" ? "دایرکت سپند" : "پاسخ سپند") : selectedThread.name} · {clock(message.at)}
                         {message.status === "failed" && <b className="error-text"> · ارسال نشد{message.error ? `: ${message.error}` : ""}</b>}
                         {message.status === "sending" && " · در حال ارسال"}
                       </span>

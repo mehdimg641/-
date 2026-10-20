@@ -6,7 +6,12 @@ import { clientKey, isLocalAuth, LOCAL_SESSION_MS, LocalAuthError, localLogin } 
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, publicProcedure, router } from "./_core/trpc";
 import {
+  applyRulesToUnanswered,
   buildThreads,
+  importPostComments,
+  listPosts,
+  postComments,
+  syncPosts,
   inboxStats,
   isAutoReplyEnabled,
   listApprovals,
@@ -16,7 +21,7 @@ import {
   sendReply,
 } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
-import { getMetaApiHost, testMetaConnection } from "./metaGraph";
+import { getMetaApiHost, MetaApiError, testMetaConnection } from "./metaGraph";
 import { maskSecret, metaSetting, metaSettingSource, refreshMetaSettings, saveMetaSettings } from "./metaSettings";
 import { allowedAccountIds, isMetaWebhookConfigured } from "./metaWebhook";
 
@@ -25,9 +30,26 @@ const ruleInput = z.object({
   keywords: z.array(z.string().trim().min(1).max(60)).max(50),
   channels: z.array(z.enum(["comment", "dm"])).min(1),
   action: z.enum(["send", "approval"]),
-  template: z.string().trim().min(1).max(1000),
+  template: z.string().trim().max(1000),
+  templateId: z.number().int().nullable(),
+  dmTemplate: z.string().trim().max(1000).nullable(),
+  dmTemplateId: z.number().int().nullable(),
+  mediaIds: z.array(z.string().trim().min(1).max(64)).max(200).nullable(),
   priority: z.number().int().min(0).max(10000),
   enabled: z.boolean(),
+});
+
+/** A rule must reply somehow: in place (text or template) or, for comments, by DM. */
+function assertRuleReplies(rule: Partial<z.infer<typeof ruleInput>>) {
+  const inPlace = Boolean(rule.template) || rule.templateId != null;
+  const dm = Boolean(rule.dmTemplate) || rule.dmTemplateId != null;
+  if (!inPlace && !dm) throw new TRPCError({ code: "BAD_REQUEST", message: "متن پاسخ یا متن دایرکت (یا یک قالب) را وارد کنید" });
+}
+
+const templateInput = z.object({
+  title: z.string().trim().min(1).max(120),
+  category: z.string().trim().max(60),
+  text: z.string().trim().min(1).max(1000),
 });
 
 /** Turns state conflicts (already sent, not found) into a 409 the UI can show. */
@@ -52,6 +74,7 @@ const inboxRouter = router({
       apiHost: getMetaApiHost(),
       accountIds: allowedAccountIds(),
       persistent: store.persistent,
+      lastEventAt: (await store.listEvents(1))[0]?.createdAt ?? null,
     };
   }),
   threads: adminProcedure.query(async () => buildThreads(await getInboxStore())),
@@ -85,17 +108,65 @@ const rulesRouter = router({
     const rules = await (await getInboxStore()).listRules();
     return rules.sort((a, b) => a.priority - b.priority || a.id - b.id);
   }),
-  create: adminProcedure.input(ruleInput).mutation(async ({ input }) => (await getInboxStore()).createRule(input)),
+  create: adminProcedure.input(ruleInput).mutation(async ({ input }) => {
+    assertRuleReplies(input);
+    return (await getInboxStore()).createRule(input);
+  }),
   update: adminProcedure
     .input(z.object({ id: z.number().int(), patch: ruleInput.partial() }))
     .mutation(async ({ input }) => {
-      const rule = await (await getInboxStore()).updateRule(input.id, input.patch);
-      if (!rule) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
-      return rule;
+      const store = await getInboxStore();
+      const current = (await store.listRules()).find((r) => r.id === input.id);
+      if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
+      assertRuleReplies({ ...current, ...input.patch });
+      return (await store.updateRule(input.id, input.patch))!;
     }),
+  /** Drafts replies for messages that arrived before a matching rule existed. */
+  applyToUnanswered: adminProcedure.mutation(async () => applyRulesToUnanswered(await getInboxStore())),
   delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
     await (await getInboxStore()).deleteRule(input.id);
     return { success: true } as const;
+  }),
+});
+
+const templatesRouter = router({
+  list: adminProcedure.query(async () => (await getInboxStore()).listTemplates()),
+  create: adminProcedure.input(templateInput).mutation(async ({ input }) => (await getInboxStore()).createTemplate(input)),
+  update: adminProcedure.input(z.object({ id: z.number().int(), patch: templateInput.partial() })).mutation(async ({ input }) => {
+    const template = await (await getInboxStore()).updateTemplate(input.id, input.patch);
+    if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "قالب پیدا نشد" });
+    return template;
+  }),
+  delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+    const store = await getInboxStore();
+    const used = (await store.listRules()).filter((r) => r.templateId === input.id || r.dmTemplateId === input.id);
+    if (used.length) throw new TRPCError({ code: "CONFLICT", message: `این قالب در قانون «${used[0].name}» استفاده شده؛ ابتدا قانون را تغییر دهید` });
+    await store.deleteTemplate(input.id);
+    return { success: true } as const;
+  }),
+});
+
+/** Turns Meta errors into a message the dashboard can show. */
+async function meta<T>(fn: () => Promise<T>) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof MetaApiError) throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+    throw error;
+  }
+}
+
+const mediaIdInput = z.object({ mediaId: z.string().trim().min(1).max(64) });
+
+const postsRouter = router({
+  list: adminProcedure.query(async () => listPosts(await getInboxStore())),
+  sync: adminProcedure.mutation(async () => meta(async () => syncPosts(await getInboxStore()))),
+  comments: adminProcedure.input(mediaIdInput).query(async ({ input }) => postComments(await getInboxStore(), input.mediaId)),
+  importComments: adminProcedure.input(mediaIdInput).mutation(async ({ input }) => {
+    await refreshMetaSettings();
+    const accountId = allowedAccountIds()[0] ?? "";
+    if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید" });
+    return meta(async () => importPostComments(await getInboxStore(), input.mediaId, accountId));
   }),
 });
 
@@ -173,6 +244,8 @@ export const appRouter = router({
   inbox: inboxRouter,
   approvals: approvalsRouter,
   rules: rulesRouter,
+  templates: templatesRouter,
+  posts: postsRouter,
   settings: settingsRouter,
 });
 

@@ -87,3 +87,56 @@ function test_meta_connection(): array
         return ['ok' => false, 'host' => $host, 'error' => $e->getMessage()];
     }
 }
+
+/** DM to the author of a comment (Instagram "private reply"); once per comment, within 7 days. */
+function send_private_reply(string $commentId, string $text): array
+{
+    return graph_request('POST', '/me/messages', ['recipient' => ['comment_id' => $commentId], 'message' => ['text' => $text]]);
+}
+
+function media_owner(): string
+{
+    if (meta_api_host() === 'instagram') return 'me';
+    $ids = allowed_account_ids();
+    if (!$ids) throw new MetaApiError('ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید (تست اتصال آن را پر می‌کند)');
+    return rawurlencode($ids[0]);
+}
+
+/** Follows cursor pagination up to $maxPages. */
+function graph_list(string $path, int $maxPages): array
+{
+    $items = [];
+    $after = null;
+    for ($page = 0; $page < $maxPages; $page++) {
+        $sep = strpos($path, '?') === false ? '?' : '&';
+        $result = graph_request('GET', $after ? $path . $sep . 'after=' . rawurlencode($after) : $path);
+        foreach ($result['data'] ?? [] as $item) $items[] = $item;
+        $after = !empty($result['paging']['next']) ? ($result['paging']['cursors']['after'] ?? null) : null;
+        if (!$after) break;
+    }
+    return $items;
+}
+
+function list_recent_media(): array
+{
+    $media = graph_list('/' . media_owner() . '/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,comments_count&limit=50', 2);
+    return array_map(function ($m) {
+        $posted = null;
+        if (!empty($m['timestamp'])) $posted = (new DateTimeImmutable((string) $m['timestamp']))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        return ['id' => (string) $m['id'], 'caption' => $m['caption'] ?? null, 'mediaType' => $m['media_type'] ?? null, 'mediaUrl' => $m['media_url'] ?? null,
+            'thumbnailUrl' => $m['thumbnail_url'] ?? null, 'permalink' => $m['permalink'] ?? null, 'postedAt' => $posted,
+            'commentsCount' => isset($m['comments_count']) ? (int) $m['comments_count'] : null];
+    }, $media);
+}
+
+function list_media_comments(string $mediaId): array
+{
+    $comments = graph_list('/' . rawurlencode($mediaId) . '/comments?fields=id,text,timestamp,username,from&limit=50', 4);
+    $out = [];
+    foreach ($comments as $c) {
+        if (empty($c['text'])) continue;
+        $out[] = ['id' => (string) $c['id'], 'text' => (string) $c['text'], 'username' => $c['from']['username'] ?? ($c['username'] ?? null),
+            'fromId' => isset($c['from']['id']) ? (string) $c['from']['id'] : null];
+    }
+    return $out;
+}

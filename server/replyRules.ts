@@ -1,4 +1,4 @@
-import type { InsertReplyRule, ReplyRule } from "../drizzle/schema";
+import type { InsertReplyRule, InsertReplyTemplate, ReplyRule, ReplyTemplate } from "../drizzle/schema";
 
 export type ReplyChannel = "comment" | "dm";
 
@@ -41,6 +41,15 @@ export const DEFAULT_RULES: InsertReplyRule[] = [
   },
 ];
 
+/** Seeded into an empty templates table (the former built-in library). */
+export const DEFAULT_TEMPLATES: InsertReplyTemplate[] = [
+  { title: "استعلام قیمت اولیه", category: "فروش", text: "سلام {{username}}، وقت بخیر. برای اعلام قیمت دقیق لطفاً نوع شمش، سایز، تناژ و شهر مقصد را بفرمایید تا همکار فروش راهنمایی کند." },
+  { title: "آنالیز و کیفیت", category: "پشتیبانی", text: "سلام {{username}}، مشخصات فنی و آنالیز محصول موردنظر شما را بررسی می‌کنیم. لطفاً سایز و گرید موردنظر را بفرمایید." },
+  { title: "ارسال به شهر مقصد", category: "فروش", text: "سلام {{username}}، ارسال به شهر شما قابل بررسی است. لطفاً تناژ و زمان موردنظر را بفرمایید تا زمان تحویل و هزینه حمل اعلام شود." },
+  { title: "دریافت قراضه", category: "قراضه", text: "سلام {{username}}، برای بررسی خرید قراضه لطفاً نوع بار، وزن تقریبی، محل بارگیری و تصاویر را ارسال کنید." },
+  { title: "دعوت به دایرکت", category: "کامنت", text: "سلام {{username}}، جزئیات را در دایرکت برایتان فرستادیم 🌹" },
+];
+
 /** Persian/Arabic digits and letter variants are folded so "۳SP" and "ي" match "3sp" and "ی". */
 export function normalizeText(text: string) {
   return text
@@ -58,14 +67,43 @@ export function renderTemplate(template: string, username: string) {
   return username ? rendered : rendered.replace(/\s+،/g, "،").replace(/\s{2,}/g, " ").trim();
 }
 
-export type ReplyDecision = { rule: ReplyRule; message: string };
+export type ReplyDecision = {
+  rule: ReplyRule;
+  /** Public comment reply, or the DM reply for DM events. Empty = no reply in place. */
+  message: string;
+  /** Comments only: private DM to the commenter. Empty = none. */
+  dmMessage: string;
+};
 
-export function decideReply(rules: ReplyRule[], channel: ReplyChannel, username: string, text: string): ReplyDecision | null {
+type TemplateLookup = Pick<ReplyTemplate, "id" | "text">[];
+
+function templateText(templates: TemplateLookup, id: number | null, inline: string | null) {
+  if (id != null) return templates.find((t) => t.id === id)?.text ?? "";
+  return inline ?? "";
+}
+
+const isScoped = (rule: ReplyRule) => Boolean(rule.mediaIds && rule.mediaIds.length);
+
+/**
+ * First matching rule wins. Rules limited to specific posts are checked before rules for every
+ * post, so "keyword X on this post" beats a general rule; within each group, lower priority first.
+ */
+export function decideReply(
+  rules: ReplyRule[],
+  templates: TemplateLookup,
+  channel: ReplyChannel,
+  username: string,
+  text: string,
+  mediaId: string | null = null,
+): ReplyDecision | null {
   const normalized = normalizeText(text);
   const rule = [...rules]
     .filter((r) => r.enabled && r.channels.includes(channel))
-    .sort((a, b) => a.priority - b.priority || a.id - b.id)
+    .filter((r) => !isScoped(r) || (channel === "comment" && mediaId !== null && r.mediaIds!.includes(mediaId)))
+    .sort((a, b) => Number(isScoped(b)) - Number(isScoped(a)) || a.priority - b.priority || a.id - b.id)
     .find((r) => r.keywords.length === 0 || r.keywords.some((k) => k.trim() && normalized.includes(normalizeText(k.trim()))));
   if (!rule) return null;
-  return { rule, message: renderTemplate(rule.template, username) };
+  const message = renderTemplate(templateText(templates, rule.templateId, rule.template), username);
+  const dmMessage = channel === "comment" ? renderTemplate(templateText(templates, rule.dmTemplateId, rule.dmTemplate), username) : "";
+  return { rule, message, dmMessage };
 }

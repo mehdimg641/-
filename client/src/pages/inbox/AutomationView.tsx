@@ -1,20 +1,39 @@
 import { useState } from "react";
-import { AlertCircle, Bot, Check, CheckCircle2, ChevronLeft, Pencil, Plus, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { AlertCircle, Bot, Check, CheckCircle2, ChevronLeft, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "./types";
 import { errorMessage, faNum, relativeTime, StatusPill, Switch } from "./ui";
 
 type Rule = RouterOutputs["rules"]["list"][number];
+type Template = RouterOutputs["templates"]["list"][number];
+type Post = RouterOutputs["posts"]["list"][number];
 type Channels = Rule["channels"];
 
 const channelLabel = (channels: Channels) =>
   channels.length === 2 ? "کامنت و دایرکت" : channels[0] === "dm" ? "فقط دایرکت" : "فقط کامنت";
 
+export const postLabel = (post: Pick<Post, "id" | "caption">) => {
+  const caption = post.caption?.replace(/\s+/g, " ").trim();
+  return caption ? (caption.length > 40 ? `${caption.slice(0, 40)}…` : caption) : `پست ${post.id.slice(-6)}`;
+};
+
 export function AutomationView({ approvals, autoReply, onBack }: { approvals: ApprovalItem[]; autoReply: boolean; onBack: () => void }) {
+  const utils = trpc.useUtils();
   const [editing, setEditing] = useState<Rule | null>(null);
   const [builderKey, setBuilderKey] = useState(0);
+  const [applyNotice, setApplyNotice] = useState("");
   const rules = trpc.rules.list.useQuery();
+  const templates = trpc.templates.list.useQuery();
+  const posts = trpc.posts.list.useQuery();
+  const apply = trpc.rules.applyToUnanswered.useMutation({
+    onSuccess: (result) => {
+      setApplyNotice(result.drafted ? `برای ${faNum(result.drafted)} پیام پیش‌نویس ساخته شد و به صف تأیید رفت.` : "پیام بی‌پاسخی که با قوانین منطبق باشد پیدا نشد.");
+      utils.approvals.list.invalidate();
+      utils.inbox.invalidate();
+    },
+    onError: (error) => setApplyNotice(errorMessage(error)),
+  });
 
   const startNew = () => {
     setEditing(null);
@@ -38,27 +57,33 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
           <span className="mini-kicker">CONTROLLED AUTOMATION</span>
           <h2>پاسخ‌گویی هوشمند، با تأیید شما</h2>
           <p>
-            هر کامنت یا دایرکت ورودی با اولین قانون منطبق، یک پیش‌نویس پاسخ می‌سازد. پیش‌نویس‌ها در صف تأیید می‌مانند تا شما ارسالشان کنید.
+            هر کامنت یا دایرکت ورودی با اولین قانون منطبق پیش‌نویس می‌سازد: پاسخ زیر کامنت و در صورت تنظیم، یک دایرکت به نویسندهٔ کامنت. قوانینِ مخصوص یک پست قبل از قوانین عمومی بررسی می‌شوند.
             {autoReply
               ? " ارسال خودکار روشن است: قوانین «ارسال مستقیم» بدون تأیید ارسال می‌شوند."
-              : " ارسال خودکار خاموش است (META_AUTO_REPLY)؛ هیچ پاسخی بدون تأیید ارسال نمی‌شود."}
+              : " ارسال خودکار خاموش است؛ هیچ پاسخی بدون تأیید ارسال نمی‌شود (تنظیمات → کنترل‌های ایمنی)."}
           </p>
+          <div className="hero-actions">
+            <button className="secondary-button" disabled={apply.isPending} onClick={() => { setApplyNotice(""); apply.mutate(); }}>
+              <RefreshCw size={15} /> {apply.isPending ? "در حال بررسی..." : "اعمال قوانین روی پیام‌های بی‌پاسخ"}
+            </button>
+          </div>
+          {applyNotice && <p className="hero-notice">{applyNotice}</p>}
         </div>
       </div>
 
       <div className="section-title-row">
-        <div><h2>قواعد</h2><span>به ترتیب اولویت؛ اولین قانون منطبق اعمال می‌شود</span></div>
+        <div><h2>قواعد</h2><span>قوانین مخصوص پست اول، سپس به ترتیب اولویت؛ اولین قانون منطبق اعمال می‌شود</span></div>
         <button className="secondary-button" onClick={startNew}><Plus size={16} /> قانون جدید</button>
       </div>
       {rules.error && <div className="settings-warning"><AlertCircle size={16} /><span>{errorMessage(rules.error)}</span></div>}
       <div className="rule-grid">
         {rules.data?.map((rule) => (
-          <RuleCard key={rule.id} rule={rule} onEdit={() => { setEditing(rule); setBuilderKey((key) => key + 1); }} />
+          <RuleCard key={rule.id} rule={rule} templates={templates.data ?? []} posts={posts.data ?? []} onEdit={() => { setEditing(rule); setBuilderKey((key) => key + 1); }} />
         ))}
       </div>
 
       <div className="builder-grid">
-        <RuleBuilder key={builderKey} rule={editing} onDone={startNew} />
+        <RuleBuilder key={builderKey} rule={editing} templates={templates.data ?? []} posts={posts.data ?? []} onDone={startNew} />
         <ApprovalQueue items={approvals} />
       </div>
 
@@ -70,11 +95,21 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
   );
 }
 
-function RuleCard({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
+function textSummary(templates: Template[], id: number | null, inline: string | null) {
+  if (id != null) return `قالب «${templates.find((t) => t.id === id)?.title ?? "حذف‌شده"}»`;
+  return inline || "";
+}
+
+function RuleCard({ rule, templates, posts, onEdit }: { rule: Rule; templates: Template[]; posts: Post[]; onEdit: () => void }) {
   const utils = trpc.useUtils();
   const update = trpc.rules.update.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
   const remove = trpc.rules.delete.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
   const tone = rule.action === "approval" ? "gold" : "blue";
+  const reply = textSummary(templates, rule.templateId, rule.template);
+  const dm = textSummary(templates, rule.dmTemplateId, rule.dmTemplate);
+  const scope = rule.mediaIds?.length
+    ? rule.mediaIds.map((id) => postLabel(posts.find((p) => p.id === id) ?? { id, caption: null })).join("، ")
+    : null;
   return (
     <div className="rule-card">
       <div className="rule-top">
@@ -82,8 +117,10 @@ function RuleCard({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
         <div className="rule-title"><b>{rule.name}</b><span>{rule.enabled ? "فعال" : "غیرفعال"} · اولویت {faNum(rule.priority)}</span></div>
         <Switch small on={rule.enabled} label="فعال/غیرفعال" onToggle={() => update.mutate({ id: rule.id, patch: { enabled: !rule.enabled } })} />
       </div>
+      {scope && <div className="rule-line"><span>پست</span><p><ImageIcon size={12} /> {scope}</p></div>}
       <div className="rule-line"><span>اگر</span><p>{rule.keywords.length ? `متن شامل «${rule.keywords.join("، ")}» باشد` : "هیچ قانون دیگری منطبق نشود"} ({channelLabel(rule.channels)})</p></div>
-      <div className="rule-line"><span>آنگاه</span><p>{rule.template}</p></div>
+      {reply && <div className="rule-line"><span>پاسخ</span><p>{reply}</p></div>}
+      {dm && <div className="rule-line"><span>دایرکت</span><p>{dm}</p></div>}
       <div className="rule-footer">
         <StatusPill tone={tone}>{rule.action === "approval" ? "نیازمند تأیید" : "ارسال مستقیم"}</StatusPill>
         <span className="rule-actions">
@@ -97,42 +134,105 @@ function RuleCard({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
 
 const splitKeywords = (value: string) => value.split(/[,،\n]/).map((k) => k.trim()).filter(Boolean);
 
-function RuleBuilder({ rule, onDone }: { rule: Rule | null; onDone: () => void }) {
+/** Text written here, or a saved template from the library. */
+function TextSource({ label, hint, value, templateId, templates, allowNone, onChange }: {
+  label: string;
+  hint?: string;
+  value: string;
+  templateId: number | null;
+  templates: Template[];
+  allowNone?: boolean;
+  onChange: (next: { value: string; templateId: number | null }) => void;
+}) {
+  const mode = templateId != null ? "template" : allowNone && !value ? "none" : "text";
+  const [forcedText, setForcedText] = useState(false);
+  const shown = forcedText && mode === "none" ? "text" : mode;
+  const preview = (shown === "template" ? templates.find((t) => t.id === templateId)?.text : value)?.replaceAll("{{username}}", "hossein.rz");
+  return (
+    <div className="text-source">
+      <div className="text-source-head">
+        <b>{label}</b>
+        <div className="segmented">
+          {allowNone && <button type="button" className={shown === "none" ? "active" : ""} onClick={() => { setForcedText(false); onChange({ value: "", templateId: null }); }}>ندارد</button>}
+          <button type="button" className={shown === "text" ? "active" : ""} onClick={() => { setForcedText(true); onChange({ value, templateId: null }); }}>متن جدید</button>
+          <button type="button" className={shown === "template" ? "active" : ""} disabled={!templates.length} onClick={() => onChange({ value, templateId: templateId ?? templates[0]?.id ?? null })}>از قالب‌ها</button>
+        </div>
+      </div>
+      {shown === "text" && <textarea value={value} onChange={(e) => onChange({ value: e.target.value, templateId: null })} placeholder="سلام {{username}}، ..." />}
+      {shown === "template" && (
+        <select value={templateId ?? ""} onChange={(e) => onChange({ value, templateId: Number(e.target.value) })}>
+          {templates.map((t) => <option key={t.id} value={t.id}>{t.title}{t.category ? ` (${t.category})` : ""}</option>)}
+        </select>
+      )}
+      {hint && <span className="field-tip">{hint}</span>}
+      {shown !== "none" && preview && <div className="builder-preview"><Sparkles size={14} /><span>پیش‌نمایش: {preview}</span></div>}
+    </div>
+  );
+}
+
+export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: {
+  rule: Rule | null;
+  templates: Template[];
+  posts: Post[];
+  presetMediaIds?: string[];
+  onDone: () => void;
+}) {
   const utils = trpc.useUtils();
   const [name, setName] = useState(rule?.name ?? "");
   const [keywords, setKeywords] = useState(rule?.keywords.join("، ") ?? "");
-  const [channels, setChannels] = useState<Channels>(rule?.channels ?? ["comment", "dm"]);
+  const [channels, setChannels] = useState<Channels>(rule?.channels ?? (presetMediaIds ? ["comment"] : ["comment", "dm"]));
   const [action, setAction] = useState<Rule["action"]>(rule?.action ?? "approval");
   const [priority, setPriority] = useState(rule?.priority ?? 50);
-  const [template, setTemplate] = useState(rule?.template ?? "سلام {{username}}، ");
+  const [reply, setReply] = useState({ value: rule?.template ?? "سلام {{username}}، ", templateId: rule?.templateId ?? null });
+  const [dm, setDm] = useState({ value: rule?.dmTemplate ?? "", templateId: rule?.dmTemplateId ?? null });
+  const [mediaIds, setMediaIds] = useState<string[]>(rule?.mediaIds ?? presetMediaIds ?? []);
   const [error, setError] = useState("");
 
   const onSuccess = () => {
     utils.rules.list.invalidate();
+    utils.posts.list.invalidate();
     onDone();
   };
   const onError = (e: unknown) => setError(errorMessage(e));
   const create = trpc.rules.create.useMutation({ onSuccess, onError });
   const update = trpc.rules.update.useMutation({ onSuccess, onError });
 
+  const forComments = channels.includes("comment");
+  const scoped = mediaIds.length > 0;
+  // Post-specific rules only make sense for comments.
+  const effectiveChannels: Channels = scoped ? ["comment"] : channels;
+
   const save = () => {
     setError("");
-    const input = { name, keywords: splitKeywords(keywords), channels, action, template, priority, enabled: rule?.enabled ?? true };
+    const input = {
+      name,
+      keywords: splitKeywords(keywords),
+      channels: effectiveChannels,
+      action,
+      template: reply.templateId != null ? "" : reply.value,
+      templateId: reply.templateId,
+      dmTemplate: forComments && dm.templateId == null && dm.value.trim() ? dm.value : null,
+      dmTemplateId: forComments ? dm.templateId : null,
+      mediaIds: scoped ? mediaIds : null,
+      priority,
+      enabled: rule?.enabled ?? true,
+    };
     if (rule) update.mutate({ id: rule.id, patch: input });
     else create.mutate(input);
   };
 
-  const channelValue = channels.length === 2 ? "both" : channels[0];
-  const preview = template.replaceAll("{{username}}", "hossein.rz");
+  const channelValue = scoped ? "comment" : channels.length === 2 ? "both" : channels[0];
+  const togglePost = (id: string) => setMediaIds((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
+  const syncedPosts = posts.filter((p) => p.synced || mediaIds.includes(p.id));
 
   return (
     <div className="builder-card">
-      <div className="builder-header"><div><b>{rule ? `ویرایش «${rule.name}»` : "ساخت قانون جدید"}</b><span>برای پاسخ به کامنت و دایرکت</span></div><Workflow size={18} /></div>
+      <div className="builder-header"><div><b>{rule ? `ویرایش «${rule.name}»` : "ساخت قانون جدید"}</b><span>پاسخ زیر کامنت، دایرکت به نویسندهٔ کامنت، یا پاسخ دایرکت</span></div><Workflow size={18} /></div>
       <div className="builder-fields">
-        <label>نام قانون<input value={name} onChange={(event) => setName(event.target.value)} placeholder="مثلاً: درخواست قیمت" /></label>
+        <label>نام قانون<input value={name} onChange={(event) => setName(event.target.value)} placeholder="مثلاً: قیمت تیرآهن" /></label>
         <label>کلمات محرک (با ، جدا کنید؛ خالی = همه پیام‌ها)<input value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="قیمت، نرخ، استعلام" /></label>
         <label>کانال
-          <select value={channelValue} onChange={(event) => setChannels(event.target.value === "both" ? ["comment", "dm"] : [event.target.value as "comment" | "dm"])}>
+          <select value={channelValue} disabled={scoped} onChange={(event) => setChannels(event.target.value === "both" ? ["comment", "dm"] : [event.target.value as "comment" | "dm"])}>
             <option value="both">کامنت و دایرکت</option>
             <option value="comment">فقط کامنت</option>
             <option value="dm">فقط دایرکت</option>
@@ -146,12 +246,53 @@ function RuleBuilder({ rule, onDone }: { rule: Rule | null; onDone: () => void }
         </label>
         <label>اولویت (عدد کمتر = زودتر)<input type="number" min={0} max={10000} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label>
       </div>
-      <label>متن پاسخ <span className="field-tip">{"{{username}}"} = نام اکانت مخاطب (در دایرکت‌ها خالی می‌ماند)</span><textarea value={template} onChange={(event) => setTemplate(event.target.value)} /></label>
-      <div className="builder-preview"><Sparkles size={14} /><span>پیش‌نمایش: {preview}</span></div>
+
+      {forComments && (
+        <div className="post-scope">
+          <b>پست‌ها</b>
+          <div className="segmented">
+            <button type="button" className={!scoped ? "active" : ""} onClick={() => setMediaIds([])}>همهٔ پست‌ها</button>
+            <button type="button" className={scoped ? "active" : ""} disabled={!syncedPosts.length} onClick={() => !scoped && syncedPosts[0] && setMediaIds([syncedPosts[0].id])}>پست‌های انتخابی</button>
+          </div>
+          {scoped && (
+            <div className="post-pick">
+              {syncedPosts.map((p) => (
+                <label key={p.id} className={mediaIds.includes(p.id) ? "picked" : ""}>
+                  <input type="checkbox" checked={mediaIds.includes(p.id)} onChange={() => togglePost(p.id)} />
+                  {p.imageUrl ? <img src={p.imageUrl} alt="" loading="lazy" /> : <span className="post-thumb-empty"><ImageIcon size={14} /></span>}
+                  <span>{postLabel(p)}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {!syncedPosts.length && <span className="field-tip">برای انتخاب پست، ابتدا در صفحهٔ «پست‌ها» همگام‌سازی کنید.</span>}
+        </div>
+      )}
+
+      <TextSource
+        label={forComments ? (channels.length === 2 && !scoped ? "پاسخ (زیر کامنت / در دایرکت)" : "پاسخ زیر کامنت") : "پاسخ دایرکت"}
+        hint={'{{username}} = نام اکانت مخاطب (در دایرکت‌ها خالی می‌ماند)'}
+        value={reply.value}
+        templateId={reply.templateId}
+        templates={templates}
+        allowNone={forComments}
+        onChange={setReply}
+      />
+      {forComments && (
+        <TextSource
+          label="دایرکت به نویسندهٔ کامنت"
+          hint="اینستاگرام اجازهٔ یک دایرکت برای هر کامنت را تا ۷ روز بعد از آن می‌دهد."
+          value={dm.value}
+          templateId={dm.templateId}
+          templates={templates}
+          allowNone
+          onChange={setDm}
+        />
+      )}
       {error && <div className="settings-warning"><AlertCircle size={16} /><span>{error}</span></div>}
       <div className="builder-buttons">
-        <button className="primary-button" onClick={save} disabled={create.isPending || update.isPending || !name.trim() || !template.trim()}><Check size={15} /> {rule ? "ذخیره تغییرات" : "ذخیره قانون"}</button>
-        {rule && <button className="secondary-button" onClick={onDone}>انصراف</button>}
+        <button className="primary-button" onClick={save} disabled={create.isPending || update.isPending || !name.trim()}><Check size={15} /> {rule ? "ذخیره تغییرات" : "ذخیره قانون"}</button>
+        {(rule || presetMediaIds) && <button className="secondary-button" onClick={onDone}>انصراف</button>}
       </div>
     </div>
   );
@@ -164,6 +305,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const refresh = () => {
     utils.approvals.list.invalidate();
     utils.inbox.invalidate();
+    utils.posts.invalidate();
   };
   const approve = trpc.approvals.approve.useMutation({
     onSuccess: (result, input) => {
@@ -185,6 +327,9 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
             <div className="approval-copy">
               <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} · {relativeTime(item.createdAt)}</small></b>
               <p>{item.incoming}</p>
+              <span className={`reply-kind ${item.replyChannel}`}>
+                {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}
+              </span>
               <textarea className="approval-draft" value={drafts[item.id] ?? item.draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} />
               <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
               {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}

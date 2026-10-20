@@ -23,10 +23,25 @@ $tmp = sys_get_temp_dir() . '/sepand-test-' . getmypid() . '.php';
 file_put_contents($tmp, "<?php return ['secret' => '" . test_config_secret() . "'];");
 putenv("SEPAND_CONFIG=$tmp");
 
-$rules = array_map(function ($r, $i) { return ['id' => $i + 1, 'enabled' => true] + $r; }, default_rules(), array_keys(default_rules()));
-check('price rule + username', decide_reply($rules, 'comment', 'ali', 'قیمت شمش چنده؟')['message'], 'سلام ali، برای اعلام قیمت دقیق لطفاً سایز، تناژ و شهر مقصد را دایرکت کنید.');
-check('sensitive before price', decide_reply($rules, 'dm', '', 'قیمت با تخفیف؟')['rule']['name'], 'تخفیف / قرارداد / تحویل');
-check('persian digits', decide_reply($rules, 'dm', '', 'آنالیز ۳SP')['rule']['name'], 'آنالیز و کیفیت');
+$base = ['enabled' => true, 'templateId' => null, 'dmTemplate' => null, 'dmTemplateId' => null, 'mediaIds' => null];
+$rules = array_map(function ($r, $i) use ($base) { return ['id' => $i + 1] + $r + $base; }, default_rules(), array_keys(default_rules()));
+check('price rule + username', decide_reply($rules, [], 'comment', 'ali', 'قیمت شمش چنده؟')['message'], 'سلام ali، برای اعلام قیمت دقیق لطفاً سایز، تناژ و شهر مقصد را دایرکت کنید.');
+check('sensitive before price', decide_reply($rules, [], 'dm', '', 'قیمت با تخفیف؟')['rule']['name'], 'تخفیف / قرارداد / تحویل');
+check('persian digits', decide_reply($rules, [], 'dm', '', 'آنالیز ۳SP')['rule']['name'], 'آنالیز و کیفیت');
+
+// Per-post rule: replies in place from a template and sends a DM; scoped rules win over general ones.
+$templates = [['id' => 7, 'title' => 'لیست قیمت', 'category' => '', 'text' => 'سلام {{username}}، لیست قیمت را دایرکت کردیم.']];
+$scoped = ['id' => 99, 'name' => 'پست تیرآهن', 'keywords' => ['قیمت'], 'channels' => ['comment'], 'action' => 'approval', 'template' => '',
+    'priority' => 500, 'templateId' => 7, 'dmTemplate' => 'لیست قیمت امروز: ...', 'mediaIds' => ['1789']] + $base;
+$withPost = array_merge($rules, [$scoped]);
+$d = decide_reply($withPost, $templates, 'comment', 'ali', 'قیمت؟', '1789');
+check('scoped rule wins', $d['rule']['id'], 99);
+check('reply from template', $d['message'], 'سلام ali، لیست قیمت را دایرکت کردیم.');
+check('dm text', $d['dmMessage'], 'لیست قیمت امروز: ...');
+check('other post → general rule', decide_reply($withPost, $templates, 'comment', 'ali', 'قیمت؟', '555')['rule']['id'] !== 99, true);
+check('dm channel ignores scoped', decide_reply([$scoped], $templates, 'dm', 'ali', 'قیمت؟', '1789'), null);
+check('no dm for dm events', decide_reply($rules, [], 'dm', '', 'قیمت؟')['dmMessage'], '');
+check('missing template → empty', decide_reply([['templateId' => 1234] + $scoped], $templates, 'comment', '', 'قیمت', '1789')['message'], '');
 check('empty username tidy', render_template('سلام {{username}}، لطفاً دایرکت کنید.', ''), 'سلام، لطفاً دایرکت کنید.');
 check('arabic letters', normalize_text('قيمت'), 'قیمت');
 

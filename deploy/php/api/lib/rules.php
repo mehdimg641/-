@@ -14,6 +14,18 @@ function default_rules(): array
     ];
 }
 
+/** Seeded into an empty templates table. */
+function default_templates(): array
+{
+    return [
+        ['title' => 'استعلام قیمت اولیه', 'category' => 'فروش', 'text' => 'سلام {{username}}، وقت بخیر. برای اعلام قیمت دقیق لطفاً نوع شمش، سایز، تناژ و شهر مقصد را بفرمایید تا همکار فروش راهنمایی کند.'],
+        ['title' => 'آنالیز و کیفیت', 'category' => 'پشتیبانی', 'text' => 'سلام {{username}}، مشخصات فنی و آنالیز محصول موردنظر شما را بررسی می‌کنیم. لطفاً سایز و گرید موردنظر را بفرمایید.'],
+        ['title' => 'ارسال به شهر مقصد', 'category' => 'فروش', 'text' => 'سلام {{username}}، ارسال به شهر شما قابل بررسی است. لطفاً تناژ و زمان موردنظر را بفرمایید تا زمان تحویل و هزینه حمل اعلام شود.'],
+        ['title' => 'دریافت قراضه', 'category' => 'قراضه', 'text' => 'سلام {{username}}، برای بررسی خرید قراضه لطفاً نوع بار، وزن تقریبی، محل بارگیری و تصاویر را ارسال کنید.'],
+        ['title' => 'دعوت به دایرکت', 'category' => 'کامنت', 'text' => 'سلام {{username}}، جزئیات را در دایرکت برایتان فرستادیم 🌹'],
+    ];
+}
+
 /** Persian/Arabic digits and letter variants are folded so "۳SP" and "ي" match "3sp" and "ی". */
 function normalize_text(string $text): string
 {
@@ -40,6 +52,10 @@ function rule_row(array $row): array
         'channels' => json_decode((string) $row['channels'], true) ?: [],
         'action' => $row['action'],
         'template' => $row['template'],
+        'templateId' => $row['templateId'] === null ? null : (int) $row['templateId'],
+        'dmTemplate' => $row['dmTemplate'],
+        'dmTemplateId' => $row['dmTemplateId'] === null ? null : (int) $row['dmTemplateId'],
+        'mediaIds' => $row['mediaIds'] === null ? null : array_values(array_map('strval', json_decode((string) $row['mediaIds'], true) ?: [])),
         'priority' => (int) $row['priority'],
         'enabled' => (bool) $row['enabled'],
         'createdAt' => db_time($row['createdAt']),
@@ -62,12 +78,16 @@ function list_rules(): array
 
 function insert_rule(array $rule): int
 {
-    db()->prepare("INSERT INTO replyRules (name, keywords, channels, action, template, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)")->execute([
+    db()->prepare("INSERT INTO replyRules (name, keywords, channels, action, template, templateId, dmTemplate, dmTemplateId, mediaIds, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
         $rule['name'],
         json_encode(array_values($rule['keywords']), JSON_UNESCAPED_UNICODE),
         json_encode(array_values($rule['channels'])),
         $rule['action'],
         $rule['template'],
+        $rule['templateId'] ?? null,
+        $rule['dmTemplate'] ?? null,
+        $rule['dmTemplateId'] ?? null,
+        isset($rule['mediaIds']) ? json_encode(array_values($rule['mediaIds'])) : null,
         (int) $rule['priority'],
         isset($rule['enabled']) ? (int) (bool) $rule['enabled'] : 1,
     ]);
@@ -86,7 +106,8 @@ function update_rule(int $id, array $patch): ?array
 {
     $sets = [];
     $args = [];
-    foreach (['name', 'action', 'template'] as $f) if (array_key_exists($f, $patch)) { $sets[] = "`$f` = ?"; $args[] = $patch[$f]; }
+    foreach (['name', 'action', 'template', 'templateId', 'dmTemplate', 'dmTemplateId'] as $f) if (array_key_exists($f, $patch)) { $sets[] = "`$f` = ?"; $args[] = $patch[$f]; }
+    if (array_key_exists('mediaIds', $patch)) { $sets[] = '`mediaIds` = ?'; $args[] = $patch['mediaIds'] === null ? null : json_encode(array_values($patch['mediaIds'])); }
     foreach (['keywords', 'channels'] as $f) if (array_key_exists($f, $patch)) { $sets[] = "`$f` = ?"; $args[] = json_encode(array_values($patch[$f]), JSON_UNESCAPED_UNICODE); }
     if (array_key_exists('priority', $patch)) { $sets[] = '`priority` = ?'; $args[] = (int) $patch['priority']; }
     if (array_key_exists('enabled', $patch)) { $sets[] = '`enabled` = ?'; $args[] = (int) (bool) $patch['enabled']; }
@@ -97,18 +118,74 @@ function update_rule(int $id, array $patch): ?array
     return get_rule($id);
 }
 
-/** First enabled rule (by priority) whose channel and keywords match; null if none. */
-function decide_reply(array $rules, string $channel, string $username, string $text): ?array
+function template_text(array $templates, ?int $id, ?string $inline): string
+{
+    if ($id !== null) {
+        foreach ($templates as $t) if ($t['id'] === $id) return $t['text'];
+        return '';
+    }
+    return (string) $inline;
+}
+
+function rule_is_scoped(array $rule): bool
+{
+    return !empty($rule['mediaIds']);
+}
+
+/**
+ * First matching rule wins. Rules limited to specific posts are checked before rules for every
+ * post; within each group, lower priority first. Returns the reply in place ('message') and,
+ * for comments, the private DM to the commenter ('dmMessage'); either may be empty.
+ */
+function decide_reply(array $rules, array $templates, string $channel, string $username, string $text, ?string $mediaId = null): ?array
 {
     $normalized = normalize_text($text);
-    foreach ($rules as $rule) {
-        if (!$rule['enabled'] || !in_array($channel, $rule['channels'], true)) continue;
+    $candidates = array_values(array_filter($rules, function ($rule) use ($channel, $mediaId) {
+        if (!$rule['enabled'] || !in_array($channel, $rule['channels'], true)) return false;
+        return !rule_is_scoped($rule) || ($channel === 'comment' && $mediaId !== null && in_array($mediaId, $rule['mediaIds'], true));
+    }));
+    usort($candidates, function ($a, $b) {
+        return [(int) rule_is_scoped($b), $a['priority'], $a['id']] <=> [(int) rule_is_scoped($a), $b['priority'], $b['id']];
+    });
+    foreach ($candidates as $rule) {
         $match = !$rule['keywords'];
         foreach ($rule['keywords'] as $keyword) {
             $k = trim((string) $keyword);
             if ($k !== '' && mb_strpos($normalized, normalize_text($k)) !== false) { $match = true; break; }
         }
-        if ($match) return ['rule' => $rule, 'message' => render_template($rule['template'], $username)];
+        if (!$match) continue;
+        $message = render_template(template_text($templates, $rule['templateId'], $rule['template']), $username);
+        $dmMessage = $channel === 'comment' ? render_template(template_text($templates, $rule['dmTemplateId'], $rule['dmTemplate']), $username) : '';
+        return ['rule' => $rule, 'message' => $message, 'dmMessage' => $dmMessage];
     }
     return null;
+}
+
+// --- templates ----------------------------------------------------------------------------------
+
+function template_row(array $row): array
+{
+    return ['id' => (int) $row['id'], 'title' => $row['title'], 'category' => $row['category'], 'text' => $row['text'],
+        'createdAt' => db_time($row['createdAt']), 'updatedAt' => db_time($row['updatedAt'])];
+}
+
+function list_templates(): array
+{
+    $pdo = db();
+    $rows = $pdo->query("SELECT * FROM replyTemplates ORDER BY id")->fetchAll();
+    if (!$rows && !(int) $pdo->query("SELECT COUNT(*) FROM appSettings WHERE `key` = 'TEMPLATES_SEEDED'")->fetchColumn()) {
+        $insert = $pdo->prepare("INSERT INTO replyTemplates (title, category, text) VALUES (?, ?, ?)");
+        foreach (default_templates() as $t) $insert->execute([$t['title'], $t['category'], $t['text']]);
+        $pdo->exec("INSERT IGNORE INTO appSettings (`key`, `value`) VALUES ('TEMPLATES_SEEDED', '1')");
+        $rows = $pdo->query("SELECT * FROM replyTemplates ORDER BY id")->fetchAll();
+    }
+    return array_map('template_row', $rows);
+}
+
+function get_template(int $id): ?array
+{
+    $stmt = db()->prepare("SELECT * FROM replyTemplates WHERE id = ?");
+    $stmt->execute([$id]);
+    $row = $stmt->fetch();
+    return $row ? template_row($row) : null;
 }

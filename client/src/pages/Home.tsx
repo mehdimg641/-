@@ -1,22 +1,24 @@
 import { useState, type FormEvent } from "react";
-import { BarChart3, ChevronLeft, Inbox, Instagram, Library, LogIn, LogOut, Settings2, ShieldCheck, Workflow } from "lucide-react";
+import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { AnalyticsView } from "./inbox/AnalyticsView";
 import { AutomationView } from "./inbox/AutomationView";
 import { InboxView } from "./inbox/InboxView";
+import { PostsView } from "./inbox/PostsView";
 import { SettingsView } from "./inbox/SettingsView";
 import { TemplatesView } from "./inbox/TemplatesView";
 import { errorMessage, faNum, IconButton, relativeTime } from "./inbox/ui";
 
-type Tab = "inbox" | "automation" | "templates" | "analytics" | "settings";
+type Tab = "inbox" | "posts" | "automation" | "templates" | "analytics" | "settings";
 
 const POLL_MS = 15_000;
 const LOCAL_AUTH = import.meta.env.VITE_AUTH_MODE === "local";
 
 const navItems: { id: Tab; label: string; icon: typeof Inbox }[] = [
   { id: "inbox", label: "صندوق ورودی", icon: Inbox },
+  { id: "posts", label: "پست‌ها", icon: ImageIcon },
   { id: "automation", label: "اتوماسیون", icon: Workflow },
   { id: "templates", label: "قالب پاسخ‌ها", icon: Library },
   { id: "analytics", label: "تحلیل عملکرد", icon: BarChart3 },
@@ -141,6 +143,7 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             onOpenAutomation={() => setTab("automation")}
           />
         )}
+        {tab === "posts" && <PostsView />}
         {tab === "automation" && <AutomationView approvals={approvals.data ?? []} autoReply={Boolean(status.data?.autoReply)} onBack={() => setTab("inbox")} />}
         {tab === "templates" && <TemplatesView onUse={(text) => { setTab("inbox"); setComposer(text); }} />}
         {tab === "analytics" && <AnalyticsView stats={stats.data} />}

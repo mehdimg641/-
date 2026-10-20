@@ -65,8 +65,17 @@ export const replyRules = mysqlTable("replyRules", {
   channels: json("channels").$type<Array<"comment" | "dm">>().notNull(),
   /** "send" may go out automatically when META_AUTO_REPLY=true; "approval" always waits for an operator. */
   action: mysqlEnum("action", ["send", "approval"]).default("approval").notNull(),
-  /** Supports {{username}}. */
+  /**
+   * Reply text (supports {{username}}): the public reply for comments, the DM reply for DMs.
+   * Ignored when templateId is set; empty with no templateId means "no public reply".
+   */
   template: text("template").notNull(),
+  templateId: int("templateId"),
+  /** Comments only: also DM the commenter (Instagram private reply). Text or a saved template. */
+  dmTemplate: text("dmTemplate"),
+  dmTemplateId: int("dmTemplateId"),
+  /** Comments only: limit the rule to these posts. Null or empty = every post. */
+  mediaIds: json("mediaIds").$type<string[]>(),
   priority: int("priority").default(100).notNull(),
   enabled: boolean("enabled").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -84,6 +93,8 @@ export const replies = mysqlTable(
     eventId: int("eventId").notNull(),
     ruleId: int("ruleId"),
     source: mysqlEnum("source", ["rule", "manual"]).notNull(),
+    /** "reply" answers in place (comment reply or DM); "private" DMs a commenter about their comment. */
+    channel: mysqlEnum("channel", ["reply", "private"]).default("reply").notNull(),
     text: text("text").notNull(),
     status: mysqlEnum("status", ["pending", "sending", "sent", "rejected", "failed"]).default("pending").notNull(),
     error: text("error"),
@@ -105,3 +116,32 @@ export const appSettings = mysqlTable("appSettings", {
 });
 
 export type AppSetting = typeof appSettings.$inferSelect;
+
+/** Reusable reply texts, picked by rules or inserted into the composer. Supports {{username}}. */
+export const replyTemplates = mysqlTable("replyTemplates", {
+  id: int("id").autoincrement().primaryKey(),
+  title: varchar("title", { length: 120 }).notNull(),
+  category: varchar("category", { length: 60 }).default("").notNull(),
+  text: text("text").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type ReplyTemplate = typeof replyTemplates.$inferSelect;
+export type InsertReplyTemplate = typeof replyTemplates.$inferInsert;
+
+/** Instagram posts, synced from the Graph API so comments can be grouped and rules scoped per post. */
+export const igMedia = mysqlTable("igMedia", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  caption: text("caption"),
+  mediaType: varchar("mediaType", { length: 32 }),
+  mediaUrl: text("mediaUrl"),
+  thumbnailUrl: text("thumbnailUrl"),
+  permalink: text("permalink"),
+  postedAt: timestamp("postedAt"),
+  commentsCount: int("commentsCount"),
+  syncedAt: timestamp("syncedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type IgMedia = typeof igMedia.$inferSelect;
+export type InsertIgMedia = typeof igMedia.$inferInsert;
