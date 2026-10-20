@@ -118,6 +118,10 @@ function ensure_schema(PDO $pdo): void
             `permalink` text, `postedAt` timestamp NULL, `commentsCount` int,
             `syncedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`))",
+        "CREATE TABLE IF NOT EXISTS `webhookLog` (
+            `id` int AUTO_INCREMENT NOT NULL, `at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, `method` varchar(8) NOT NULL,
+            `status` int NOT NULL, `outcome` varchar(32) NOT NULL, `detail` varchar(255) NOT NULL DEFAULT '', `accounts` varchar(255) NOT NULL DEFAULT '',
+            PRIMARY KEY (`id`))",
     ];
     // Columns added after the first release; older installs get them via ALTER TABLE.
     $columns = [
@@ -128,7 +132,7 @@ function ensure_schema(PDO $pdo): void
         ['replyRules', 'mediaIds', "ALTER TABLE `replyRules` ADD `mediaIds` json NULL"],
     ];
     // Cheap check first: skip the DDL once every table and column exists.
-    $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia')")->fetchColumn();
+    $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia','webhookLog')")->fetchColumn();
     $haveColumns = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND (
         (table_name = 'replies' AND column_name = 'channel') OR
         (table_name = 'replyRules' AND column_name IN ('templateId','dmTemplate','dmTemplateId','mediaIds')))")->fetchColumn();

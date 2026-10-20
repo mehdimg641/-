@@ -138,6 +138,15 @@ function media_id_input(array $in): string
     return $id;
 }
 
+/** The build installed in the document root (written by scripts/publish-deploy-branch.sh), or null. */
+function installed_version(): ?array
+{
+    $file = dirname(__DIR__) . '/version.json';
+    $data = is_file($file) ? json_decode((string) file_get_contents($file), true) : null;
+    if (!is_array($data) || !isset($data['commit'])) return null;
+    return ['version' => (string) ($data['version'] ?? ''), 'commit' => (string) $data['commit'], 'builtAt' => (string) ($data['builtAt'] ?? '')];
+}
+
 /** Optional secret field: missing = keep, null = clear, string = set. */
 function opt_secret(array $in, string $key, array &$patch, string $setting): void
 {
@@ -170,7 +179,8 @@ function procedures(): array
 
         'inbox.status' => ['query', $admin(function () {
             return ['metaConfigured' => meta_configured(), 'autoReply' => auto_reply_enabled(), 'apiHost' => meta_api_host(), 'accountIds' => allowed_account_ids(), 'persistent' => true,
-                'lastEventAt' => db_time(db()->query("SELECT MAX(createdAt) FROM igEvents")->fetchColumn() ?: null)];
+                'lastEventAt' => db_time(db()->query("SELECT MAX(createdAt) FROM igEvents")->fetchColumn() ?: null),
+                'serverVersion' => installed_version()];
         })],
         'inbox.threads' => ['query', $admin(function () { return build_threads(); })],
         'inbox.stats' => ['query', $admin(function () { return inbox_stats(); })],
@@ -285,6 +295,18 @@ function procedures(): array
             return ['success' => true];
         })],
         'settings.testMeta' => ['mutation', $admin(function () { return test_meta_connection(); })],
+        // Why the inbox may be empty: does Meta call in, and is the account subscribed to the webhook fields?
+        'settings.diagnostics' => ['query', $admin(function () {
+            try {
+                $subscription = ['ok' => true] + get_webhook_subscription();
+            } catch (MetaApiError $e) {
+                $subscription = ['ok' => false, 'error' => $e->getMessage()];
+            }
+            $counts = db()->query("SELECT kind, COUNT(*) n FROM igEvents GROUP BY kind")->fetchAll(PDO::FETCH_KEY_PAIR);
+            return ['webhookLog' => list_webhook_log(20), 'subscription' => $subscription,
+                'counts' => ['comments' => (int) ($counts['comment'] ?? 0), 'dms' => (int) ($counts['dm'] ?? 0)]];
+        })],
+        'settings.subscribeWebhooks' => ['mutation', $admin(function () { return meta_call('subscribe_webhooks'); })],
     ];
 }
 

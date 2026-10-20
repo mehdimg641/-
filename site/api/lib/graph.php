@@ -102,6 +102,34 @@ function media_owner(): string
     return rawurlencode($ids[0]);
 }
 
+const WEBHOOK_FIELDS = ['comments', 'messages'];
+
+function require_instagram_login(): void
+{
+    if (meta_api_host() !== 'instagram') {
+        throw new MetaApiError('این بخش فقط برای توکن Instagram Login (IGAA…) است؛ در Facebook Login اشتراک از تنظیمات صفحه انجام می‌شود');
+    }
+}
+
+/** Which webhook fields Meta delivers for this account. Without a subscription no event arrives. */
+function get_webhook_subscription(): array
+{
+    require_instagram_login();
+    $result = graph_request('GET', '/me/subscribed_apps');
+    $fields = [];
+    foreach ($result['data'] ?? [] as $app) foreach ($app['subscribed_fields'] ?? [] as $f) $fields[(string) $f] = true;
+    $fields = array_keys($fields);
+    return ['fields' => $fields, 'missing' => array_values(array_diff(WEBHOOK_FIELDS, $fields))];
+}
+
+/** Asks Meta to deliver comment and message events for this account to the app's webhook. */
+function subscribe_webhooks(): array
+{
+    require_instagram_login();
+    graph_request('POST', '/me/subscribed_apps?subscribed_fields=' . implode(',', WEBHOOK_FIELDS));
+    return get_webhook_subscription();
+}
+
 /** The connected account's username, or null if Meta won't say. */
 function own_username(): ?string
 {
