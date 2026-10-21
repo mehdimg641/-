@@ -21,6 +21,14 @@ export function DiagnosticsCard({ status }: { status: InboxStatus | undefined })
   const utils = trpc.useUtils();
   const diag = trpc.settings.diagnostics.useQuery(undefined, { refetchInterval: 30_000 });
   const subscribe = trpc.settings.subscribeWebhooks.useMutation({ onSuccess: () => utils.settings.diagnostics.invalidate() });
+  // The operator picks the id Meta actually sends; the allowlist itself stays a manual choice.
+  const adoptAccount = trpc.settings.saveMeta.useMutation({
+    onSuccess: () => {
+      utils.inbox.status.invalidate();
+      utils.settings.meta.invalidate();
+      utils.settings.diagnostics.invalidate();
+    },
+  });
   const allowed = status?.accountIds ?? [];
   const data = diag.data;
   const sub = data?.subscription;
@@ -92,6 +100,17 @@ export function DiagnosticsCard({ status }: { status: InboxStatus | undefined })
             <span>رویداد برای حساب <bdi dir="ltr">{foreign.join(", ")}</bdi> آمد ولی شناسهٔ مجاز در تنظیمات <bdi dir="ltr">{allowed.join(", ")}</bdi> است، پس کنار گذاشته شد. شناسهٔ حساب را در «اتصال اینستاگرام» اصلاح کنید.</span>
           </div>
         )}
+        {foreign.map((id) => (
+          <button
+            key={id}
+            className="primary-button"
+            disabled={adoptAccount.isPending}
+            onClick={() => window.confirm(`شناسهٔ حساب به ${id} تغییر کند؟ از این به بعد فقط رویدادهای همین حساب پذیرفته می‌شود.`) && adoptAccount.mutate({ accountIds: id })}
+          >
+            استفاده از شناسهٔ <bdi dir="ltr">{id}</bdi>
+          </button>
+        ))}
+        {adoptAccount.error && <span className="error-text">{errorMessage(adoptAccount.error)}</span>}
         {data && data.webhookLog.length === 0 && (
           <div className="settings-warning">
             <AlertCircle size={16} />
