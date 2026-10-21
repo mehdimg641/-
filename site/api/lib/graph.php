@@ -191,12 +191,12 @@ function graph_time(?string $value): ?string
     }
 }
 
-/** Recent DMs of the connected account (Instagram Login only): up to 10 messages of the 25 latest conversations. */
+/** Recent DMs of the connected account (Instagram Login only): the last 20 messages (Meta's limit) of up to 50 conversations. */
 function list_recent_messages(): array
 {
     require_instagram_login();
     try {
-        $conversations = graph_list('/me/conversations?platform=instagram&limit=25&fields=' . rawurlencode('messages.limit(10){id,created_time,from,message}'), 1);
+        $conversations = graph_list('/me/conversations?platform=instagram&limit=25&fields=' . rawurlencode('messages.limit(20){id,created_time,from,message}'), 2);
     } catch (MetaApiError $e) {
         // Some accounts reject nested fields; fall back to one request per conversation and message.
         $conversations = [];
