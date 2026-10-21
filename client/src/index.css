@@ -351,3 +351,8 @@ a.profile-link { text-decoration: none; }
 .approval-group-head small { color: #8a8475; }
 .approval-group-head .text-button { margin-inline-start: auto; }
 .approval-select { align-self: flex-start; margin-top: 10px; }
+
+/* Rule being edited, and its form */
+.rule-card.editing { border-color: #e0b24a; box-shadow: 0 0 0 2px rgba(224, 178, 74, 0.25); }
+.builder-slot { scroll-margin-top: 80px; }
+.builder-slot.editing .builder-card { border-color: #e0b24a; box-shadow: 0 0 0 3px rgba(224, 178, 74, 0.2); }

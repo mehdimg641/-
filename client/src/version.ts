@@ -5,6 +5,7 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  { version: "1.7.1", items: ["دکمهٔ «ویرایش» قانون، صفحه را به فرم ویرایش می‌برد و قانون در حال ویرایش را مشخص می‌کند"] },
   {
     version: "1.7.0",
     items: [

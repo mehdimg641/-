@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
@@ -35,10 +35,21 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
     onError: (error) => setApplyNotice(errorMessage(error)),
   });
 
+  const builderRef = useRef<HTMLDivElement>(null);
   const startNew = () => {
     setEditing(null);
     setBuilderKey((key) => key + 1);
   };
+  const edit = (rule: Rule) => {
+    setEditing(rule);
+    setBuilderKey((key) => key + 1);
+  };
+  // The form sits below the rules and the tester; bring it into view, or "edit" seems to do nothing.
+  useEffect(() => {
+    if (!editing) return;
+    builderRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    builderRef.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  }, [editing, builderKey]);
 
   return (
     <div className="content-wrap subpage">
@@ -78,14 +89,16 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
       {rules.error && <div className="settings-warning"><AlertCircle size={16} /><span>{errorMessage(rules.error)}</span></div>}
       <div className="rule-grid">
         {rules.data?.map((rule) => (
-          <RuleCard key={rule.id} rule={rule} templates={templates.data ?? []} posts={posts.data ?? []} onEdit={() => { setEditing(rule); setBuilderKey((key) => key + 1); }} />
+          <RuleCard key={rule.id} rule={rule} editing={editing?.id === rule.id} templates={templates.data ?? []} posts={posts.data ?? []} onEdit={() => edit(rule)} />
         ))}
       </div>
 
       <RuleTester posts={posts.data ?? []} />
 
       <div className="builder-grid">
-        <RuleBuilder key={builderKey} rule={editing} templates={templates.data ?? []} posts={posts.data ?? []} onDone={startNew} />
+        <div ref={builderRef} className={editing ? "builder-slot editing" : "builder-slot"}>
+          <RuleBuilder key={builderKey} rule={editing} templates={templates.data ?? []} posts={posts.data ?? []} onDone={startNew} />
+        </div>
         <ApprovalQueue items={approvals} />
       </div>
 
@@ -102,7 +115,7 @@ function textSummary(templates: Template[], id: number | null, inline: string | 
   return inline || "";
 }
 
-function RuleCard({ rule, templates, posts, onEdit }: { rule: Rule; templates: Template[]; posts: Post[]; onEdit: () => void }) {
+function RuleCard({ rule, editing, templates, posts, onEdit }: { rule: Rule; editing: boolean; templates: Template[]; posts: Post[]; onEdit: () => void }) {
   const utils = trpc.useUtils();
   const update = trpc.rules.update.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
   const remove = trpc.rules.delete.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
@@ -113,7 +126,7 @@ function RuleCard({ rule, templates, posts, onEdit }: { rule: Rule; templates: T
     ? rule.mediaIds.map((id) => postLabel(posts.find((p) => p.id === id) ?? { id, caption: null })).join("، ")
     : null;
   return (
-    <div className="rule-card">
+    <div className={editing ? "rule-card editing" : "rule-card"}>
       <div className="rule-top">
         <div className={`rule-icon ${tone}`}>{rule.action === "approval" ? <ShieldCheck size={18} /> : <Send size={18} />}</div>
         <div className="rule-title"><b>{rule.name}</b><span>{rule.enabled ? "فعال" : "غیرفعال"} · اولویت {faNum(rule.priority)}</span></div>
@@ -126,7 +139,7 @@ function RuleCard({ rule, templates, posts, onEdit }: { rule: Rule; templates: T
       <div className="rule-footer">
         <StatusPill tone={tone}>{rule.action === "approval" ? "نیازمند تأیید" : "ارسال مستقیم"}</StatusPill>
         <span className="rule-actions">
-          <button className="text-button" onClick={onEdit}><Pencil size={13} /> ویرایش</button>
+          <button className="text-button" onClick={onEdit}><Pencil size={13} /> {editing ? "در حال ویرایش…" : "ویرایش"}</button>
           <button className="text-button danger" onClick={() => window.confirm(`قانون «${rule.name}» حذف شود؟`) && remove.mutate({ id: rule.id })}><Trash2 size={13} /> حذف</button>
         </span>
       </div>
