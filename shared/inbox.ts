@@ -48,6 +48,8 @@ export type ApprovalItem = {
   replyChannel: "reply" | "private";
   /** Titles of the quick-reply buttons sent with this message. */
   buttons: string[];
+  /** When the comment or DM itself arrived; createdAt is when the draft was made. */
+  receivedAt: Date;
   mediaId: string | null;
   tone: string;
   status: ReplyStatus;

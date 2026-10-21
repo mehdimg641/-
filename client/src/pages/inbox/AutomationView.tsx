@@ -30,7 +30,11 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
   const posts = trpc.posts.list.useQuery();
   const apply = trpc.rules.applyToUnanswered.useMutation({
     onSuccess: (result) => {
-      setApplyNotice(result.drafted ? `برای ${faNum(result.drafted)} پیام پیش‌نویس ساخته شد و به صف تأیید رفت.` : "پیام بی‌پاسخی که با قوانین منطبق باشد پیدا نشد.");
+      const parts = [
+        result.updated ? `${faNum(result.updated)} پیش‌نویس با قوانین فعلی به‌روز شد` : "",
+        result.drafted ? `برای ${faNum(result.drafted)} پیام بی‌پاسخ پیش‌نویس تازه ساخته شد` : "",
+      ].filter(Boolean);
+      setApplyNotice(parts.length ? `${parts.join("؛ ")}.` : "صف تأیید با قوانین فعلی هماهنگ است و پیام بی‌پاسخ منطبقی پیدا نشد.");
       utils.approvals.list.invalidate();
       utils.inbox.invalidate();
     },
@@ -77,7 +81,7 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
           </p>
           <div className="hero-actions">
             <button className="secondary-button" disabled={apply.isPending} onClick={() => { setApplyNotice(""); apply.mutate(); }}>
-              <RefreshCw size={15} /> {apply.isPending ? "در حال بررسی..." : "اعمال قوانین روی پیام‌های بی‌پاسخ"}
+              <RefreshCw size={15} /> {apply.isPending ? "در حال بررسی..." : "اعمال قوانین فعلی (به‌روزرسانی صف و پیام‌های بی‌پاسخ)"}
             </button>
           </div>
           {applyNotice && <p className="hero-notice">{applyNotice}</p>}
@@ -518,7 +522,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
                 <input className="approval-select" type="checkbox" aria-label="انتخاب" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
                 <div className={`approval-avatar ${item.tone}`}>{item.name[0]}</div>
                 <div className="approval-copy">
-                  <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} · {relativeTime(item.createdAt)}</small></b>
+                  <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} {relativeTime(item.receivedAt)}{Math.abs(new Date(item.createdAt).getTime() - new Date(item.receivedAt).getTime()) > 3_600_000 ? ` · پیش‌نویس ${relativeTime(item.createdAt)}` : ""}</small></b>
                   <p>{item.incoming}</p>
                   <span className={`reply-kind ${item.replyChannel}`}>
                     {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}

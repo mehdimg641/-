@@ -201,35 +201,45 @@ function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = 
 const REDRAFT_WINDOW_DAYS = 7;
 
 /**
- * Brings the approval queue in line with the current rules and templates: for recent messages
- * that only have pending rule drafts (or nothing yet), drafts the rule now calls for. Messages
- * with a sent, failed, manual or rejected reply are left alone. Never sends anything.
+ * Brings the approval queue in line with the current rules and templates. Looks at every message
+ * that still has a pending rule draft (however old: "apply to unanswered" drafts old comments
+ * too) and at recent messages without any reply. Each channel (reply in place, private DM) is
+ * judged on its own: one with a sent, failed, rejected or manual reply is settled and left alone;
+ * the pending drafts of the others are drafted again. Never sends anything.
  */
 function redraft_pending(): array
 {
+    @set_time_limit(120);
     $rules = list_rules();
     $templates = list_templates();
     $pdo = db();
     // The session runs in UTC (bootstrap), like the stored timestamps.
-    $events = array_map('event_row', $pdo->query("SELECT * FROM igEvents WHERE createdAt >= NOW() - INTERVAL " . REDRAFT_WINDOW_DAYS . " DAY ORDER BY id LIMIT " . THREAD_EVENT_LIMIT)->fetchAll());
+    $events = array_map('event_row', $pdo->query("SELECT * FROM igEvents WHERE createdAt >= NOW() - INTERVAL " . REDRAFT_WINDOW_DAYS . " DAY
+        OR id IN (SELECT eventId FROM replies WHERE status = 'pending' AND source = 'rule') ORDER BY id")->fetchAll());
     $byEvent = [];
     foreach (replies_for_events(array_column($events, 'id')) as $reply) $byEvent[$reply['eventId']][] = $reply;
     $updated = 0;
     foreach ($events as $event) {
         $own = $byEvent[$event['id']] ?? [];
-        foreach ($own as $reply) if ($reply['status'] !== 'pending' || $reply['source'] !== 'rule') continue 2;
+        $sent = [];
+        foreach ($own as $reply) {
+            if ($reply['status'] === 'sending') continue 2;
+            if ($reply['status'] !== 'pending' || $reply['source'] !== 'rule') $sent[$reply['channel']] = true;
+        }
+        $drafts = array_values(array_filter($own, function ($r) use ($sent) { return $r['status'] === 'pending' && $r['source'] === 'rule' && !isset($sent[$r['channel']]); }));
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         $ruleId = $decision ? $decision['rule']['id'] : null;
-        $wanted = $decision ? draft_parts($event['kind'], $decision, $event['id']) : [];
-        $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text'], 'quickReplies' => $r['quickReplies']]; }, $own);
-        $sameRule = $event['ruleId'] === $ruleId && !array_filter($own, function ($r) use ($ruleId) { return $r['ruleId'] !== $ruleId; });
-        if ($sameRule && $current === $wanted) continue;
-        if ($own) {
-            $ids = array_column($own, 'id');
+        $wanted = $decision ? array_values(array_filter(draft_parts($event['kind'], $decision, $event['id']), function ($p) use ($sent) { return !isset($sent[$p['channel']]); })) : [];
+        $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text'], 'quickReplies' => $r['quickReplies']]; }, $drafts);
+        $sameRule = !array_filter($drafts, function ($r) use ($ruleId) { return $r['ruleId'] !== $ruleId; });
+        if ($sameRule && $current === $wanted && ($sent || $event['ruleId'] === $ruleId)) continue;
+        if ($drafts) {
+            $ids = array_column($drafts, 'id');
             $pdo->prepare("DELETE FROM replies WHERE status = 'pending' AND id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")->execute($ids);
         }
-        $pdo->prepare("UPDATE igEvents SET ruleId = ? WHERE id = ?")->execute([$ruleId, $event['id']]);
-        if ($decision) create_drafts($event['id'], $event['kind'], $decision);
+        // Keep the tag of the rule that answered, if part of the answer already went out.
+        if (!$sent) $pdo->prepare("UPDATE igEvents SET ruleId = ? WHERE id = ?")->execute([$ruleId, $event['id']]);
+        foreach ($wanted as $part) create_reply($event['id'], $ruleId, 'rule', $part['text'], null, $part['channel'], $part['quickReplies']);
         $updated++;
     }
     return ['updated' => $updated];
@@ -238,6 +248,8 @@ function redraft_pending(): array
 /** Drafts replies for events that never got one (e.g. they arrived before the rule). Never auto-sends. */
 function apply_rules_to_unanswered(): array
 {
+    // First bring drafts already in the queue up to date with the current rules.
+    $updated = redraft_pending()['updated'];
     $rules = list_rules();
     $templates = list_templates();
     $rows = db()->query("SELECT e.* FROM igEvents e LEFT JOIN replies r ON r.eventId = e.id WHERE r.id IS NULL ORDER BY e.createdAt DESC, e.id DESC LIMIT " . THREAD_EVENT_LIMIT)->fetchAll();
@@ -246,7 +258,7 @@ function apply_rules_to_unanswered(): array
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         if ($decision && create_drafts($event['id'], $event['kind'], $decision)) $drafted++;
     }
-    return ['drafted' => $drafted];
+    return ['drafted' => $drafted, 'updated' => $updated];
 }
 
 function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null): array
@@ -405,7 +417,7 @@ function build_threads(): array
 function list_approvals(): array
 {
     $style = rule_style(list_rules());
-    $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming FROM replies r JOIN igEvents e ON e.id = r.eventId
+    $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt FROM replies r JOIN igEvents e ON e.id = r.eventId
         WHERE r.status IN ('pending', 'failed') ORDER BY r.createdAt, r.id")->fetchAll();
     $items = [];
     foreach ($rows as $row) {
@@ -422,6 +434,7 @@ function list_approvals(): array
             'reason' => $reply['source'] === 'manual' ? 'پاسخ دستی' : $s['tag'],
             'replyChannel' => $reply['channel'],
             'buttons' => array_column($reply['quickReplies'] ?? [], 'title'),
+            'receivedAt' => db_time($row['receivedAt']),
             'mediaId' => $row['mediaId'],
             'tone' => $s['tone'],
             'status' => $reply['status'],

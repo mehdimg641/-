@@ -153,8 +153,10 @@ describe("comment → reply + DM per post", () => {
     await ingestEvents(store, [comment("c1", "قیمت؟")]);
     expect(await listApprovals(store)).toHaveLength(0);
     await store.createRule({ name: "قیمت", keywords: ["قیمت"], channels: ["comment"], action: "send", template: "سلام", templateId: null, dmTemplate: null, dmTemplateId: null, mediaIds: null, priority: 10, enabled: true });
-    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 1 });
-    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 0 });
+    // A recent message is picked up by the queue refresh that runs first.
+    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 0, updated: 1 });
+    expect(await listApprovals(store)).toHaveLength(1);
+    expect(await applyRulesToUnanswered(store)).toEqual({ drafted: 0, updated: 0 });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -286,6 +288,25 @@ describe("redraftPending", () => {
     await store.updateRule(rule.id, { enabled: false });
     await redraftPending(store);
     expect(await store.listReplies({ status: "pending" })).toEqual([]);
+  });
+
+  it("updates drafts of old comments (made by apply-to-unanswered) and keeps parts already sent", async () => {
+    const store = await emptyStore();
+    const rule = await store.createRule({ ...base, template: "پاسخ قدیم", dmTemplate: "دایرکت قدیم" });
+    const old = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    await ingestEvents(store, [{ ...comment("c1", "لیست؟"), at: old }, { ...comment("c2", "لیست!"), senderId: "888", at: old }], { draft: false });
+    await applyRulesToUnanswered(store);
+    // c2's public reply already went out; only its DM is still waiting.
+    const c2 = (await store.listEvents(10)).find((e) => e.externalId === "c2")!;
+    const c2Reply = (await store.listReplies({ eventIds: [c2.id] })).find((r) => r.channel === "reply")!;
+    await sendReply(store, c2Reply.id, 1);
+
+    await store.updateRule(rule.id, { template: "پاسخ جدید", dmTemplate: "دایرکت جدید" });
+    expect((await redraftPending(store)).updated).toBe(2);
+    const pending = await store.listReplies({ status: "pending" });
+    expect(pending.filter((r) => r.eventId !== c2.id).map((r) => r.text).sort()).toEqual(["دایرکت جدید", "پاسخ جدید"]);
+    expect(pending.filter((r) => r.eventId === c2.id).map((r) => [r.channel, r.text])).toEqual([["private", "دایرکت جدید"]]);
+    expect((await store.getReply(c2Reply.id))?.text).toBe("پاسخ قدیم");
   });
 
   it("drafts recent messages a new rule now matches, but not old ones", async () => {

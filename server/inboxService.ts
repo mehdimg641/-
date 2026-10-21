@@ -136,34 +136,55 @@ export async function ingestEvents(store: InboxStore, events: IncomingEvent[], o
 const REDRAFT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Brings the approval queue in line with the current rules and templates: for recent messages
- * that only have pending rule drafts (or nothing yet), drafts the rule now calls for. Messages
- * with a sent, failed, manual or rejected reply are left alone. Never sends anything.
+ * Brings the approval queue in line with the current rules and templates. Looks at every message
+ * that still has a pending rule draft (however old: "apply to unanswered" drafts old comments
+ * too) and at recent messages without any reply. Each channel (reply in place, private DM) is
+ * judged on its own: one with a sent, failed, rejected or manual reply is settled and left alone;
+ * the pending drafts of the others are drafted again. Never sends anything.
  */
 export async function redraftPending(store: InboxStore, now = new Date()) {
-  const [events, rules, templates] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules(), store.listTemplates()]);
-  const recent = events.filter((e) => now.getTime() - e.createdAt.getTime() <= REDRAFT_WINDOW_MS);
-  const replies = await store.listReplies({ eventIds: recent.map((e) => e.id) });
+  const [events, rules, templates, pending] = await Promise.all([
+    store.listEvents(THREAD_EVENT_LIMIT),
+    store.listRules(),
+    store.listTemplates(),
+    store.listReplies({ status: "pending" }),
+  ]);
+  const withDrafts = new Set(pending.filter((r) => r.source === "rule").map((r) => r.eventId));
+  const byId = new Map(events.map((e) => [e.id, e] as const));
+  for (const id of Array.from(withDrafts)) {
+    if (!byId.has(id)) {
+      const event = await store.getEvent(id);
+      if (event) byId.set(id, event);
+    }
+  }
+  const candidates = Array.from(byId.values()).filter((e) => withDrafts.has(e.id) || now.getTime() - e.createdAt.getTime() <= REDRAFT_WINDOW_MS);
+  const replies = await store.listReplies({ eventIds: candidates.map((e) => e.id) });
   let updated = 0;
-  for (const event of recent) {
+  for (const event of candidates) {
     // In creation order, like draftParts (the database store lists newest first).
     const own = replies.filter((r) => r.eventId === event.id).sort((a, b) => a.id - b.id);
-    if (own.some((r) => r.status !== "pending" || r.source !== "rule")) continue;
+    if (own.some((r) => r.status === "sending")) continue;
+    const sent = new Set(own.filter((r) => r.status !== "pending" || r.source !== "rule").map((r) => r.channel));
+    const drafts = own.filter((r) => r.status === "pending" && r.source === "rule" && !sent.has(r.channel));
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
-    const wanted = decision ? draftParts(event, decision) : [];
+    const ruleId = decision?.rule.id ?? null;
+    const wanted = decision ? draftParts(event, decision).filter((p) => !sent.has(p.channel)) : [];
     const same =
-      own.length === wanted.length &&
-      own.every(
+      drafts.length === wanted.length &&
+      drafts.every(
         (r, i) =>
           r.channel === wanted[i].channel &&
           r.text === wanted[i].text &&
           JSON.stringify(r.quickReplies ?? null) === JSON.stringify(wanted[i].quickReplies) &&
-          r.ruleId === (decision?.rule.id ?? null),
+          r.ruleId === ruleId,
       );
-    if (same && event.ruleId === (decision?.rule.id ?? null)) continue;
-    await store.deletePendingReplies(own.map((r) => r.id));
-    await store.setEventRule(event.id, decision?.rule.id ?? null);
-    if (decision) await createDrafts(store, event, decision);
+    if (same && (sent.size > 0 || event.ruleId === ruleId)) continue;
+    await store.deletePendingReplies(drafts.map((r) => r.id));
+    // Keep the tag of the rule that answered, if part of the answer already went out.
+    if (!sent.size) await store.setEventRule(event.id, ruleId);
+    for (const part of wanted) {
+      await store.createReply({ eventId: event.id, ruleId, source: "rule", channel: part.channel, text: part.text, quickReplies: part.quickReplies, status: "pending" });
+    }
     updated++;
   }
   return { updated };
@@ -174,6 +195,8 @@ export async function redraftPending(store: InboxStore, now = new Date()) {
  * the rule existed). Drafts always wait for approval; nothing is sent automatically.
  */
 export async function applyRulesToUnanswered(store: InboxStore) {
+  // First bring drafts already in the queue up to date with the current rules.
+  const { updated } = await redraftPending(store);
   const [events, rules, templates] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules(), store.listTemplates()]);
   const answered = new Set((await store.listReplies({ eventIds: events.map((e) => e.id) })).map((r) => r.eventId));
   let drafted = 0;
@@ -183,7 +206,7 @@ export async function applyRulesToUnanswered(store: InboxStore) {
     if (!decision) continue;
     if ((await createDrafts(store, event, decision)).length) drafted++;
   }
-  return { drafted };
+  return { drafted, updated };
 }
 
 export class ReplyStateError extends Error {}
@@ -333,6 +356,7 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
       reason: reply.source === "manual" ? "پاسخ دستی" : tag,
       replyChannel: reply.channel,
       buttons: reply.quickReplies?.map((q) => q.title) ?? [],
+      receivedAt: event.createdAt,
       mediaId: event.mediaId,
       tone,
       status: reply.status,
