@@ -46,6 +46,8 @@ export type ApprovalItem = {
   reason: string;
   /** "reply": answer in place (comment reply / DM); "private": DM to the commenter. */
   replyChannel: "reply" | "private";
+  /** Titles of the quick-reply buttons sent with this message. */
+  buttons: string[];
   mediaId: string | null;
   tone: string;
   status: ReplyStatus;
@@ -101,3 +103,22 @@ export const joinMessages = (text: string) => splitMessages(text).join("\n\n");
 export const messagesFit = (text: string) => splitMessages(text).every((part) => part.length <= MAX_MESSAGE_LENGTH);
 
 export const MESSAGES_TOO_LONG = "هر پیام حداکثر ۱۰۰۰ کاراکتر است؛ متن طولانی را با یک خط --- به چند پیام تقسیم کنید";
+
+/** A button under a rule's DM and the reply it sends when tapped. */
+export type DmButton = { title: string; reply: string };
+/** An Instagram quick reply as sent: the payload says which rule option it was. */
+export type QuickReply = { title: string; payload: string };
+
+export const MAX_BUTTONS = 13;
+export const MAX_BUTTON_TITLE = 20;
+
+export const buttonPayload = (ruleId: number, index: number, eventId: number) => `SEPAND:${ruleId}:${index}:${eventId}`;
+
+export function parseButtonPayload(payload: string | null | undefined) {
+  const m = /^SEPAND:(\d+):(\d+):(\d+)$/.exec(payload ?? "");
+  return m ? { ruleId: Number(m[1]), index: Number(m[2]), eventId: Number(m[3]) } : null;
+}
+
+/** When Instagram refuses the buttons, the options go into the text; typing one counts as a tap. */
+export const optionsAsText = (text: string, buttons: QuickReply[]) =>
+  `${text}\n\nبرای ادامه یکی از این‌ها را بنویسید: ${buttons.map((b) => `«${b.title}»`).join("، ")}`;

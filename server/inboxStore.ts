@@ -64,6 +64,7 @@ function ruleDefaults(rule: RuleInput, id: number, now: Date): ReplyRule {
     dmTemplate: rule.dmTemplate ?? null,
     dmTemplateId: rule.dmTemplateId ?? null,
     mediaIds: rule.mediaIds ?? null,
+    dmButtons: rule.dmButtons ?? null,
     priority: rule.priority ?? 100,
     enabled: rule.enabled ?? true,
     createdAt: now,
@@ -155,6 +156,7 @@ export class MemoryInboxStore implements InboxStore {
       source: reply.source,
       channel: reply.channel ?? "reply",
       text: reply.text,
+      quickReplies: reply.quickReplies ?? null,
       status: reply.status ?? "pending",
       error: reply.error ?? null,
       decidedBy: reply.decidedBy ?? null,
@@ -254,7 +256,13 @@ function normalizeRule(rule: ReplyRule): ReplyRule {
     keywords: parseJsonArray(rule.keywords),
     channels: parseJsonArray(rule.channels),
     mediaIds: rule.mediaIds == null ? null : parseJsonArray<string>(rule.mediaIds),
+    dmButtons: rule.dmButtons == null ? null : parseJsonArray(rule.dmButtons),
   };
+}
+
+/** MariaDB returns JSON columns as strings. */
+function normalizeReply(reply: Reply): Reply {
+  return { ...reply, quickReplies: reply.quickReplies == null ? null : parseJsonArray(reply.quickReplies) };
 }
 
 function isDuplicateKeyError(error: unknown) {
@@ -334,12 +342,12 @@ export class DrizzleInboxStore implements InboxStore {
   async createReply(reply: Omit<InsertReply, "id" | "createdAt">) {
     const [{ id }] = await this.db.insert(replies).values(reply).$returningId();
     const rows = await this.db.select().from(replies).where(eq(replies.id, id)).limit(1);
-    return rows[0];
+    return normalizeReply(rows[0]);
   }
 
   async getReply(id: number) {
     const rows = await this.db.select().from(replies).where(eq(replies.id, id)).limit(1);
-    return rows[0];
+    return rows[0] ? normalizeReply(rows[0]) : undefined;
   }
 
   async updateReply(id: number, patch: ReplyPatch) {
@@ -365,11 +373,12 @@ export class DrizzleInboxStore implements InboxStore {
       filter.status ? eq(replies.status, filter.status) : undefined,
       filter.eventIds ? inArray(replies.eventId, filter.eventIds) : undefined,
     ].filter((c) => c !== undefined);
-    return this.db
+    const rows = await this.db
       .select()
       .from(replies)
       .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(desc(replies.createdAt));
+    return rows.map(normalizeReply);
   }
 
   async listTemplates() {

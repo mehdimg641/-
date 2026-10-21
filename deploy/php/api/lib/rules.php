@@ -78,6 +78,7 @@ function rule_row(array $row): array
         'dmTemplate' => $row['dmTemplate'],
         'dmTemplateId' => $row['dmTemplateId'] === null ? null : (int) $row['dmTemplateId'],
         'mediaIds' => $row['mediaIds'] === null ? null : array_values(array_map('strval', json_decode((string) $row['mediaIds'], true) ?: [])),
+        'dmButtons' => ($row['dmButtons'] ?? null) === null ? null : array_values(json_decode((string) $row['dmButtons'], true) ?: []),
         'priority' => (int) $row['priority'],
         'enabled' => (bool) $row['enabled'],
         'createdAt' => db_time($row['createdAt']),
@@ -100,7 +101,7 @@ function list_rules(): array
 
 function insert_rule(array $rule): int
 {
-    db()->prepare("INSERT INTO replyRules (name, keywords, channels, action, template, templateId, dmTemplate, dmTemplateId, mediaIds, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
+    db()->prepare("INSERT INTO replyRules (name, keywords, channels, action, template, templateId, dmTemplate, dmTemplateId, mediaIds, dmButtons, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
         $rule['name'],
         json_encode(array_values($rule['keywords']), JSON_UNESCAPED_UNICODE),
         json_encode(array_values($rule['channels'])),
@@ -110,6 +111,7 @@ function insert_rule(array $rule): int
         $rule['dmTemplate'] ?? null,
         $rule['dmTemplateId'] ?? null,
         isset($rule['mediaIds']) ? json_encode(array_values($rule['mediaIds'])) : null,
+        isset($rule['dmButtons']) ? json_encode(array_values($rule['dmButtons']), JSON_UNESCAPED_UNICODE) : null,
         (int) $rule['priority'],
         isset($rule['enabled']) ? (int) (bool) $rule['enabled'] : 1,
     ]);
@@ -130,6 +132,7 @@ function update_rule(int $id, array $patch): ?array
     $args = [];
     foreach (['name', 'action', 'template', 'templateId', 'dmTemplate', 'dmTemplateId'] as $f) if (array_key_exists($f, $patch)) { $sets[] = "`$f` = ?"; $args[] = $patch[$f]; }
     if (array_key_exists('mediaIds', $patch)) { $sets[] = '`mediaIds` = ?'; $args[] = $patch['mediaIds'] === null ? null : json_encode(array_values($patch['mediaIds'])); }
+    if (array_key_exists('dmButtons', $patch)) { $sets[] = '`dmButtons` = ?'; $args[] = $patch['dmButtons'] === null ? null : json_encode(array_values($patch['dmButtons']), JSON_UNESCAPED_UNICODE); }
     foreach (['keywords', 'channels'] as $f) if (array_key_exists($f, $patch)) { $sets[] = "`$f` = ?"; $args[] = json_encode(array_values($patch[$f]), JSON_UNESCAPED_UNICODE); }
     if (array_key_exists('priority', $patch)) { $sets[] = '`priority` = ?'; $args[] = (int) $patch['priority']; }
     if (array_key_exists('enabled', $patch)) { $sets[] = '`enabled` = ?'; $args[] = (int) (bool) $patch['enabled']; }

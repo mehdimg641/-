@@ -366,3 +366,15 @@ a.profile-link { text-decoration: none; }
 .preview-parts { display: flex; flex-direction: column; gap: 4px; }
 .template-text-field { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
 .composer-area .multi-message textarea { min-height: 70px; }
+
+/* Quick-reply buttons */
+.buttons-editor { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #f1f1ee; }
+.buttons-editor .secondary-button { align-self: flex-start; }
+.button-row { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed #e3ddcd; border-radius: 10px; }
+.button-row-head { display: flex; align-items: center; gap: 6px; }
+.button-row-head input { flex: 1; }
+.button-row-head small { font-size: 10px; color: #8a8475; }
+.quick-replies { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.quick-reply { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 999px; border: 1px solid #c9a24e; color: #8a6516; font-size: 11px; background: #fffaf0; }
+.button-row textarea, .button-row-head input, .template-text-field textarea { width: 100%; border: 1px solid #e4e5e0; border-radius: 8px; background: #fcfcfa; padding: 8px 10px; font-size: 11px; color: #26333a; }
+.button-row textarea, .template-text-field textarea { min-height: 56px; resize: vertical; line-height: 1.8; }

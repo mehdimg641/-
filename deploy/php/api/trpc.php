@@ -80,6 +80,14 @@ function rule_input(array $in, bool $partial): array
     foreach (['templateId', 'dmTemplateId'] as $key) {
         if (!$partial || array_key_exists($key, $in)) $out[$key] = ($in[$key] ?? null) === null ? null : req_int($in, $key);
     }
+    if (array_key_exists('dmButtons', $in)) {
+        $b = $in['dmButtons'];
+        if ($b !== null && (!is_array($b) || count($b) > 13)) throw new ApiError('BAD_REQUEST', 'حداکثر ۱۳ دکمه');
+        $out['dmButtons'] = $b === null ? null : array_values(array_map(function ($button) {
+            $button = in_obj($button);
+            return ['title' => req_str($button, 'title', 1, 20), 'reply' => messages_input(req_str($button, 'reply', 1, 4000))];
+        }, $b));
+    }
     if (!$partial || array_key_exists('mediaIds', $in)) {
         $m = $in['mediaIds'] ?? null;
         if ($m !== null && (!is_array($m) || count($m) > 200)) throw new ApiError('BAD_REQUEST', 'پست‌ها نامعتبر است');
@@ -123,6 +131,13 @@ function assert_rule_replies(array $rule): void
     $inPlace = ($rule['template'] ?? '') !== '' || ($rule['templateId'] ?? null) !== null;
     $dm = ($rule['dmTemplate'] ?? null) !== null && $rule['dmTemplate'] !== '' || ($rule['dmTemplateId'] ?? null) !== null;
     if (!$inPlace && !$dm) throw new ApiError('BAD_REQUEST', 'متن پاسخ یا متن دایرکت (یا یک قالب) را وارد کنید');
+    // Buttons ride on a direct message: the DM to the commenter, or the reply itself for DM-only rules.
+    if (!empty($rule['dmButtons'])) {
+        $carrier = in_array('comment', $rule['channels'] ?? [], true) ? $dm : $inPlace;
+        if (!$carrier) throw new ApiError('BAD_REQUEST', 'دکمه‌ها زیر یک دایرکت فرستاده می‌شوند؛ ابتدا متن «دایرکت به نویسندهٔ کامنت» را وارد کنید');
+        $titles = array_column($rule['dmButtons'], 'title');
+        if (count(array_unique($titles)) !== count($titles)) throw new ApiError('BAD_REQUEST', 'متن دکمه‌ها باید با هم فرق داشته باشد');
+    }
 }
 
 function template_input(array $in, bool $partial): array
@@ -274,6 +289,7 @@ function procedures(): array
                 }, matching_rules($rules, $in['channel'], $text, $mediaId)),
                 'message' => $decision['message'] ?? '',
                 'dmMessage' => $decision['dmMessage'] ?? '',
+                'buttons' => $decision['rule']['dmButtons'] ?? [],
             ];
         })],
         // Drafts replies for messages that arrived before a matching rule existed.

@@ -296,3 +296,53 @@ describe("redraftPending", () => {
     expect((await store.listReplies({ status: "pending" })).map((r) => r.text)).toEqual(["لیست قیمت"]);
   });
 });
+
+describe("buttons under a DM", () => {
+  async function storeWithMenu() {
+    const store = new MemoryInboxStore();
+    for (const r of await store.listRules()) await store.deleteRule(r.id);
+    const rule = await store.createRule({
+      name: "منو", keywords: ["لیست"], channels: ["comment"], action: "approval", template: "", templateId: null,
+      dmTemplate: "سلام {{username}}، کدام را می‌خواهید؟", dmTemplateId: null, mediaIds: null, priority: 1, enabled: true,
+      dmButtons: [{ title: "لیست قیمت", reply: "قیمت امروز: ...\n---\nبرای سفارش پیام بدهید" }, { title: "آدرس انبار", reply: "انبار: ..." }],
+    });
+    return { store, rule };
+  }
+
+  it("sends the private reply with quick replies and answers a tapped button", async () => {
+    const { store, rule } = await storeWithMenu();
+    await ingestEvents(store, [comment("c1", "لیست؟")]);
+    const [draft] = await store.listReplies({ status: "pending" });
+    const [event] = await store.listEvents(1);
+    expect(draft.channel).toBe("private");
+    expect(draft.quickReplies).toEqual([
+      { title: "لیست قیمت", payload: `SEPAND:${rule.id}:0:${event.id}` },
+      { title: "آدرس انبار", payload: `SEPAND:${rule.id}:1:${event.id}` },
+    ]);
+    await sendReply(store, draft.id, 1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).message.quick_replies[1]).toEqual({ content_type: "text", title: "آدرس انبار", payload: `SEPAND:${rule.id}:1:${event.id}` });
+
+    fetchMock.mockClear();
+    const tap = { ...dm("mid.tap", "لیست قیمت"), senderId: "999", payload: `SEPAND:${rule.id}:0:${event.id}` };
+    const result = await ingestEvents(store, [tap]);
+    expect(result.toSend).toHaveLength(2);
+    for (const id of result.toSend) await sendReply(store, id, null);
+    expect(fetchMock.mock.calls.map((c) => JSON.parse(c[1].body))).toEqual([
+      { recipient: { id: "999" }, message: { text: "قیمت امروز: ..." } },
+      { recipient: { id: "999" }, message: { text: "برای سفارش پیام بدهید" } },
+    ]);
+  });
+
+  it("treats a typed option as a tap and falls back to text options when buttons are refused", async () => {
+    const { store } = await storeWithMenu();
+    await ingestEvents(store, [comment("c1", "لیست؟")]);
+    const [draft] = await store.listReplies({ status: "pending" });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "quick replies not supported" } }), { status: 400 }));
+    expect((await sendReply(store, draft.id, 1)).ok).toBe(true);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).message.text).toContain("«آدرس انبار»");
+
+    const result = await ingestEvents(store, [{ ...dm("mid.typed", " آدرس انبار "), senderId: "999" }]);
+    expect(result.toSend).toHaveLength(1);
+    expect((await store.getReply(result.toSend[0]))?.text).toBe("انبار: ...");
+  });
+});

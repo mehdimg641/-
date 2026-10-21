@@ -24,7 +24,7 @@ type ChangeEvent = {
 type MessagingEvent = {
   sender?: { id?: string };
   recipient?: { id?: string };
-  message?: { mid?: string; text?: string; is_echo?: boolean; is_deleted?: boolean };
+  message?: { mid?: string; text?: string; is_echo?: boolean; is_deleted?: boolean; quick_reply?: { payload?: string } };
 };
 
 export type WebhookBody = {
@@ -42,6 +42,8 @@ export type IncomingEvent = {
   mediaId: string | null;
   /** When it was written; set for imported history, webhooks use the arrival time. */
   at?: Date | null;
+  /** The quick-reply button the customer tapped, if any. */
+  payload?: string | null;
 };
 
 function constantTimeEqual(a: string, b: string) {
@@ -131,6 +133,7 @@ export function extractEvents(body: WebhookBody): IncomingEvent[] {
         username: null,
         text: message.text,
         mediaId: null,
+        payload: message.quick_reply?.payload ?? null,
       });
     }
   }

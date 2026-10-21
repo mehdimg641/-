@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
-import { joinMessages, splitMessages } from "@shared/inbox";
+import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, splitMessages, type DmButton } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
@@ -143,6 +143,7 @@ function RuleCard({ rule, editing, templates, posts, onEdit }: { rule: Rule; edi
       <div className="rule-line"><span>اگر</span><p>{rule.keywords.length ? `متن شامل «${rule.keywords.join("، ")}» باشد` : "هیچ قانون دیگری منطبق نشود"} ({channelLabel(rule.channels)})</p></div>
       {reply && <div className="rule-line"><span>پاسخ</span><p>{reply}</p></div>}
       {dm && <div className="rule-line"><span>دایرکت</span><p>{dm}</p></div>}
+      {rule.dmButtons?.length ? <div className="rule-line"><span>دکمه</span><p>{rule.dmButtons.map((b) => `«${b.title}»`).join("، ")}</p></div> : null}
       <div className="rule-footer">
         <StatusPill tone={tone}>{rule.action === "approval" ? "نیازمند تأیید" : "ارسال مستقیم"}</StatusPill>
         <span className="rule-actions">
@@ -226,6 +227,7 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
   const [reply, setReply] = useState({ value: rule?.template ?? "سلام {{username}}، ", templateId: rule?.templateId ?? null });
   const [dm, setDm] = useState({ value: rule?.dmTemplate ?? "", templateId: rule?.dmTemplateId ?? null });
   const [mediaIds, setMediaIds] = useState<string[]>(rule?.mediaIds ?? presetMediaIds ?? []);
+  const [buttons, setButtons] = useState<DmButton[]>(rule?.dmButtons ?? []);
   const [error, setError] = useState("");
 
   const onSuccess = () => {
@@ -257,6 +259,7 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
       dmTemplate: forComments && dm.templateId == null && dm.value.trim() ? dm.value : null,
       dmTemplateId: forComments ? dm.templateId : null,
       mediaIds: scoped ? mediaIds : null,
+      dmButtons: buttons.length ? buttons.map((b) => ({ title: b.title.trim(), reply: b.reply })) : null,
       priority,
       enabled: rule?.enabled ?? true,
     };
@@ -333,11 +336,43 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
           onChange={setDm}
         />
       )}
+      <ButtonsEditor buttons={buttons} onChange={setButtons} forComments={forComments} />
       {error && <div className="settings-warning"><AlertCircle size={16} /><span>{error}</span></div>}
       <div className="builder-buttons">
         <button className="primary-button" onClick={save} disabled={create.isPending || update.isPending || !name.trim()}><Check size={15} /> {rule ? "ذخیره تغییرات" : "ذخیره قانون"}</button>
         {(rule || presetMediaIds) && <button className="secondary-button" onClick={onDone}>انصراف</button>}
       </div>
+    </div>
+  );
+}
+
+/** Quick-reply buttons under the rule's DM; each option has its own reply. */
+function ButtonsEditor({ buttons, onChange, forComments }: { buttons: DmButton[]; onChange: (next: DmButton[]) => void; forComments: boolean }) {
+  const set = (i: number, patch: Partial<DmButton>) => onChange(buttons.map((b, j) => (j === i ? { ...b, ...patch } : b)));
+  return (
+    <div className="buttons-editor">
+      <div className="text-source-head">
+        <b>دکمه‌ها زیر دایرکت</b>
+        <span className="field-tip">{forComments ? "زیر «دایرکت به نویسندهٔ کامنت»" : "زیر آخرین پیام پاسخ دایرکت"}</span>
+      </div>
+      <span className="field-tip">
+        مشتری با زدن یک دکمه، پاسخ همان گزینه را خودکار دریافت می‌کند (تأیید دایرکت اول، کل گزینه‌ها را تأیید می‌کند). یک دکمه مثل «ارسال ادامه» برای پیام بعدی، یا چند گزینه مثل یک منو. حداکثر {MAX_BUTTONS} دکمه، هر کدام تا {MAX_BUTTON_TITLE} حرف.
+      </span>
+      {buttons.map((button, i) => (
+        <div className="button-row" key={i}>
+          <div className="button-row-head">
+            <input value={button.title} maxLength={MAX_BUTTON_TITLE} onChange={(e) => set(i, { title: e.target.value })} placeholder={i === 0 ? "مثلاً: لیست قیمت" : "متن دکمه"} />
+            <small>{button.title.length}/{MAX_BUTTON_TITLE}</small>
+            <button type="button" className="icon-button" aria-label="حذف دکمه" onClick={() => onChange(buttons.filter((_, j) => j !== i))}><X size={13} /></button>
+          </div>
+          <MultiMessageEditor value={button.reply} onChange={(reply) => set(i, { reply })} placeholder="پاسخی که با زدن این دکمه فرستاده می‌شود" />
+        </div>
+      ))}
+      {buttons.length < MAX_BUTTONS && (
+        <button type="button" className="secondary-button compact-button" onClick={() => onChange([...buttons, { title: buttons.length ? "" : "ارسال ادامه", reply: "" }])}>
+          <Plus size={13} /> افزودن دکمه
+        </button>
+      )}
     </div>
   );
 }
@@ -395,6 +430,12 @@ function RuleTester({ posts }: { posts: Post[] }) {
             <div className="tester-reply" key={`m${i}`}><MessageSquareText size={13} /> {channel === "dm" ? "پاسخ دایرکت" : "پاسخ زیر کامنت"}{all.length > 1 ? ` ${faNum(i + 1)} از ${faNum(all.length)}` : ""}: <p>{part}</p></div>
           ))}
           {data.dmMessage ? <div className="tester-reply"><Mail size={13} /> دایرکت به نویسندهٔ کامنت: <p>{joinMessages(data.dmMessage)}</p></div> : null}
+          {data.buttons.length > 0 && (
+            <div className="tester-reply">
+              دکمه‌های زیر دایرکت:
+              <div className="quick-replies">{data.buttons.map((b) => <span key={b.title} className="quick-reply" title={b.reply}>{b.title}</span>)}</div>
+            </div>
+          )}
           {!data.message && !data.dmMessage && (
             <div className="settings-warning"><AlertCircle size={16} /><span>قانون «{winner.name}» برنده می‌شود ولی متن پاسخی ندارد (قالبش خالی است یا برای این کانال متنی تعریف نشده)، پس پیش‌نویسی ساخته نمی‌شود. قانون را ویرایش کنید.</span></div>
           )}
@@ -483,6 +524,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
                     {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}
                   </span>
                   <textarea className="approval-draft" value={drafts[item.id] ?? item.draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} />
+                  {item.buttons.length > 0 && <div className="quick-replies">{item.buttons.map((b) => <span key={b} className="quick-reply">{b}</span>)}</div>}
                   <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
                   {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
                 </div>

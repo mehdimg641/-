@@ -1,5 +1,15 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
-import { channelOf, joinMessages, splitMessages, type ApprovalItem, type InboxThread } from "@shared/inbox";
+import {
+  buttonPayload,
+  channelOf,
+  joinMessages,
+  optionsAsText,
+  parseButtonPayload,
+  splitMessages,
+  type ApprovalItem,
+  type InboxThread,
+  type QuickReply,
+} from "@shared/inbox";
 import type { InboxStore } from "./inboxStore";
 import {
   getWebhookSubscription,
@@ -13,7 +23,7 @@ import {
   subscribeWebhooks,
 } from "./metaGraph";
 import type { IncomingEvent } from "./metaWebhook";
-import { decideReply } from "./replyRules";
+import { decideReply, normalizeText, renderTemplate } from "./replyRules";
 import { metaSetting } from "./metaSettings";
 
 const TONES = ["orange", "gold", "blue", "green", "violet"];
@@ -24,35 +34,72 @@ export function isAutoReplyEnabled() {
   return metaSetting("META_AUTO_REPLY") === "true";
 }
 
-/** Creates the drafts a rule decision calls for: a reply in place and, for comments, a private DM. */
 type Decision = NonNullable<ReturnType<typeof decideReply>>;
+type DraftPart = { channel: "reply" | "private"; text: string; quickReplies: QuickReply[] | null };
 
 /** The drafts a decision calls for, in send order. */
-function draftParts(event: Pick<IgEvent, "kind">, decision: Decision) {
+function draftParts(event: Pick<IgEvent, "id" | "kind">, decision: Decision): DraftPart[] {
   // Each "---" part is its own reply, drafted (and later sent) in order.
-  const parts: Array<{ channel: "reply" | "private"; text: string }> = splitMessages(decision.message).map((text) => ({ channel: "reply", text }));
+  const parts: DraftPart[] = splitMessages(decision.message).map((text) => ({ channel: "reply", text, quickReplies: null }));
   // Instagram allows one private reply per comment, so its parts go out as one message.
   const dm = event.kind === "comment" ? joinMessages(decision.dmMessage) : "";
-  if (dm) parts.push({ channel: "private", text: dm });
+  if (dm) parts.push({ channel: "private", text: dm, quickReplies: null });
+  // The rule's buttons ride on its direct message: the private reply for a comment, the last
+  // message for a DM. A public comment reply can't carry buttons.
+  const buttons = decision.rule.dmButtons ?? [];
+  const carrier = event.kind === "comment" ? parts.find((p) => p.channel === "private") : parts[parts.length - 1];
+  if (buttons.length && carrier) carrier.quickReplies = buttons.map((b, i) => ({ title: b.title, payload: buttonPayload(decision.rule.id, i, event.id) }));
   return parts;
 }
 
 async function createDrafts(store: InboxStore, event: IgEvent, decision: Decision) {
   const ids: number[] = [];
   for (const part of draftParts(event, decision)) {
-    ids.push((await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: part.channel, text: part.text, status: "pending" })).id);
+    ids.push(
+      (await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: part.channel, text: part.text, quickReplies: part.quickReplies, status: "pending" })).id,
+    );
   }
   return ids;
 }
 
+/** How long after a DM with buttons a typed option still counts as a tap (Instagram's reply window). */
+const TAP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Stores new events and drafts replies for each one that matches a rule. Returns the reply ids to
- * send right away (auto-reply on and rule action "send"); `allowAutoSend: false` keeps everything
- * in the approval queue (used for imported old comments).
+ * A DM that answers one of our buttons: the tapped quick reply, or the same title typed by the
+ * person we sent the buttons to. Returns the rule option to send, or null for an ordinary DM.
  */
+async function resolveTap(store: InboxStore, event: IncomingEvent, rules: ReplyRule[]) {
+  if (event.kind !== "dm") return null;
+  let tap = parseButtonPayload(event.payload);
+  if (!tap) {
+    const typed = normalizeText(event.text).trim();
+    const now = Date.now();
+    const sources = (await store.listEvents(THREAD_EVENT_LIMIT)).filter((e) => e.senderId === event.senderId);
+    const offered = (await store.listReplies({ status: "sent", eventIds: sources.map((e) => e.id) }))
+      .filter((r) => r.quickReplies?.length && r.sentAt && now - r.sentAt.getTime() <= TAP_WINDOW_MS)
+      .sort((a, b) => (b.sentAt?.getTime() ?? 0) - (a.sentAt?.getTime() ?? 0));
+    for (const reply of offered) {
+      const hit = reply.quickReplies!.find((q) => normalizeText(q.title).trim() === typed);
+      if (hit) {
+        tap = parseButtonPayload(hit.payload);
+        break;
+      }
+    }
+  }
+  if (!tap) return null;
+  const rule = rules.find((r) => r.id === tap!.ruleId);
+  const button = rule?.dmButtons?.[tap.index];
+  if (!rule || !button) return null;
+  const source = await store.getEvent(tap.eventId);
+  return { rule, parts: splitMessages(renderTemplate(button.reply, source?.username ?? "")) };
+}
+
 /**
- * Stores events and drafts the replies their rules call for. Imported history passes
- * `draft: false` (old messages shouldn't flood the approval queue) and `read: true`.
+ * Stores events and drafts the replies their rules call for. Returns the reply ids to send right
+ * away: auto-reply on and rule action "send", or the answer to a tapped button (approving the
+ * first DM approved its options). `allowAutoSend: false` keeps rule drafts in the approval queue;
+ * imported history passes `draft: false` (old messages shouldn't flood the queue) and `read: true`.
  */
 export async function ingestEvents(store: InboxStore, events: IncomingEvent[], options: { allowAutoSend?: boolean; draft?: boolean; read?: boolean } = {}) {
   const [rules, templates] = events.length ? await Promise.all([store.listRules(), store.listTemplates()]) : [[], []];
@@ -62,14 +109,22 @@ export async function ingestEvents(store: InboxStore, events: IncomingEvent[], o
   let duplicates = 0;
 
   for (const event of events) {
-    const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
-    const { at, ...fields } = event;
-    const saved = await store.insertEvent({ ...fields, ruleId: decision?.rule.id ?? null, ...(at ? { createdAt: at } : {}), ...(options.read ? { isRead: true } : {}) });
+    const tap = options.draft === false ? null : await resolveTap(store, event, rules);
+    const decision = tap ? null : decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
+    const { at, payload: _payload, ...fields } = event;
+    const ruleId = tap?.rule.id ?? decision?.rule.id ?? null;
+    const saved = await store.insertEvent({ ...fields, ruleId, ...(at ? { createdAt: at } : {}), ...(options.read ? { isRead: true } : {}) });
     if (!saved) {
       duplicates++;
       continue;
     }
     stored++;
+    if (tap) {
+      for (const text of tap.parts) {
+        toSend.push((await store.createReply({ eventId: saved.id, ruleId: tap.rule.id, source: "rule", channel: "reply", text, status: "pending" })).id);
+      }
+      continue;
+    }
     if (!decision || options.draft === false) continue;
     const ids = await createDrafts(store, saved, decision);
     if (autoSend && decision.rule.action === "send") toSend.push(...ids);
@@ -91,14 +146,20 @@ export async function redraftPending(store: InboxStore, now = new Date()) {
   const replies = await store.listReplies({ eventIds: recent.map((e) => e.id) });
   let updated = 0;
   for (const event of recent) {
-    const own = replies.filter((r) => r.eventId === event.id);
+    // In creation order, like draftParts (the database store lists newest first).
+    const own = replies.filter((r) => r.eventId === event.id).sort((a, b) => a.id - b.id);
     if (own.some((r) => r.status !== "pending" || r.source !== "rule")) continue;
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
     const wanted = decision ? draftParts(event, decision) : [];
-    const current = own.map((r) => ({ channel: r.channel, text: r.text, ruleId: r.ruleId }));
     const same =
-      current.length === wanted.length &&
-      current.every((r, i) => r.channel === wanted[i].channel && r.text === wanted[i].text && r.ruleId === (decision?.rule.id ?? null));
+      own.length === wanted.length &&
+      own.every(
+        (r, i) =>
+          r.channel === wanted[i].channel &&
+          r.text === wanted[i].text &&
+          JSON.stringify(r.quickReplies ?? null) === JSON.stringify(wanted[i].quickReplies) &&
+          r.ruleId === (decision?.rule.id ?? null),
+      );
     if (same && event.ruleId === (decision?.rule.id ?? null)) continue;
     await store.deletePendingReplies(own.map((r) => r.id));
     await store.setEventRule(event.id, decision?.rule.id ?? null);
@@ -138,10 +199,23 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
   const text = (editedText ?? reply.text).trim();
   try {
     if (!text) throw new Error("متن پاسخ خالی است");
-    if (reply.channel === "private") await sendPrivateReply(event.externalId, text);
-    else if (event.kind === "comment") await replyToComment(event.externalId, text);
-    else await sendDirectMessage(event.senderId, text);
-    await store.updateReply(replyId, { text, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date() });
+    const buttons = reply.quickReplies?.length ? reply.quickReplies : null;
+    const send = (body: string, quickReplies: QuickReply[] | null) =>
+      reply.channel === "private"
+        ? sendPrivateReply(event.externalId, body, quickReplies)
+        : event.kind === "comment"
+          ? replyToComment(event.externalId, body)
+          : sendDirectMessage(event.senderId, body, quickReplies);
+    let sentText = text;
+    try {
+      await send(text, buttons);
+    } catch (error) {
+      // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
+      if (!buttons) throw error;
+      sentText = optionsAsText(text, buttons);
+      await send(sentText, null);
+    }
+    await store.updateReply(replyId, { text: sentText, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date() });
     return { ok: true as const };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -258,6 +332,7 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
       draft: reply.text,
       reason: reply.source === "manual" ? "پاسخ دستی" : tag,
       replyChannel: reply.channel,
+      buttons: reply.quickReplies?.map((q) => q.title) ?? [],
       mediaId: event.mediaId,
       tone,
       status: reply.status,

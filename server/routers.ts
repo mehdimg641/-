@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { joinMessages, MAX_MESSAGE_LENGTH, messagesFit, MESSAGES_TOO_LONG, normalizeAccountIds } from "@shared/inbox";
+import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, MAX_MESSAGE_LENGTH, messagesFit, MESSAGES_TOO_LONG, normalizeAccountIds } from "@shared/inbox";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -41,6 +41,12 @@ const ruleInput = z.object({
   dmTemplate: z.string().trim().max(4000).refine((t) => joinMessages(t).length <= MAX_MESSAGE_LENGTH, "دایرکت به نویسندهٔ کامنت یک پیام است و حداکثر ۱۰۰۰ کاراکتر").nullable(),
   dmTemplateId: z.number().int().nullable(),
   mediaIds: z.array(z.string().trim().min(1).max(64)).max(200).nullable(),
+  /** Quick-reply buttons under the rule's DM; each sends its own reply when tapped. */
+  dmButtons: z
+    .array(z.object({ title: z.string().trim().min(1).max(MAX_BUTTON_TITLE), reply: z.string().trim().min(1).max(4000).refine(messagesFit, MESSAGES_TOO_LONG) }))
+    .max(MAX_BUTTONS)
+    .nullable()
+    .optional(),
   priority: z.number().int().min(0).max(10000),
   enabled: z.boolean(),
 });
@@ -50,6 +56,14 @@ function assertRuleReplies(rule: Partial<z.infer<typeof ruleInput>>) {
   const inPlace = Boolean(rule.template) || rule.templateId != null;
   const dm = Boolean(rule.dmTemplate) || rule.dmTemplateId != null;
   if (!inPlace && !dm) throw new TRPCError({ code: "BAD_REQUEST", message: "متن پاسخ یا متن دایرکت (یا یک قالب) را وارد کنید" });
+  // Buttons ride on a direct message: the DM to the commenter, or the reply itself for DM-only rules.
+  if (rule.dmButtons?.length) {
+    const carrier = rule.channels?.includes("comment") ? dm : inPlace;
+    if (!carrier) throw new TRPCError({ code: "BAD_REQUEST", message: "دکمه‌ها زیر یک دایرکت فرستاده می‌شوند؛ ابتدا متن «دایرکت به نویسندهٔ کامنت» را وارد کنید" });
+    if (new Set(rule.dmButtons.map((b) => b.title)).size !== rule.dmButtons.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "متن دکمه‌ها باید با هم فرق داشته باشد" });
+    }
+  }
 }
 
 const templateInput = z.object({
@@ -170,6 +184,7 @@ const rulesRouter = router({
         matches: matches.map(({ rule, keyword }) => ({ id: rule.id, name: rule.name, priority: rule.priority, scoped: Boolean(rule.mediaIds?.length), keyword })),
         message: decision?.message ?? "",
         dmMessage: decision?.dmMessage ?? "",
+        buttons: decision?.rule.dmButtons ?? [],
       };
     }),
   /** Drafts replies for messages that arrived before a matching rule existed. */

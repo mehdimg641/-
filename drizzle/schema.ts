@@ -76,6 +76,11 @@ export const replyRules = mysqlTable("replyRules", {
   dmTemplateId: int("dmTemplateId"),
   /** Comments only: limit the rule to these posts. Null or empty = every post. */
   mediaIds: json("mediaIds").$type<string[]>(),
+  /**
+   * Buttons under the rule's DM (Instagram quick replies). Tapping one sends that option's reply,
+   * which also lifts the one-private-reply limit because the customer has now answered.
+   */
+  dmButtons: json("dmButtons").$type<Array<{ title: string; reply: string }>>(),
   priority: int("priority").default(100).notNull(),
   enabled: boolean("enabled").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -96,6 +101,8 @@ export const replies = mysqlTable(
     /** "reply" answers in place (comment reply or DM); "private" DMs a commenter about their comment. */
     channel: mysqlEnum("channel", ["reply", "private"]).default("reply").notNull(),
     text: text("text").notNull(),
+    /** Quick-reply buttons sent with this message; the payload tells the webhook which option was tapped. */
+    quickReplies: json("quickReplies").$type<Array<{ title: string; payload: string }>>(),
     status: mysqlEnum("status", ["pending", "sending", "sent", "rejected", "failed"]).default("pending").notNull(),
     error: text("error"),
     /** users.id of the operator who approved, rejected or wrote the reply. */

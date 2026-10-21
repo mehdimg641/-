@@ -4,6 +4,7 @@
  * - Facebook Login page tokens ("EAA…") use graph.facebook.com.
  * META_API_HOST=instagram|facebook overrides the guess.
  */
+import type { QuickReply } from "@shared/inbox";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
 
 export type MetaApiHost = "instagram" | "facebook";
@@ -61,8 +62,13 @@ export function replyToComment(commentId: string, message: string) {
 }
 
 /** DM reply. Meta only allows this within the 24-hour window after the user's last message. */
-export function sendDirectMessage(recipientId: string, text: string) {
-  return graphRequest("POST", `/me/messages`, { recipient: { id: recipientId }, message: { text } });
+const withQuickReplies = (text: string, quickReplies?: QuickReply[] | null) =>
+  quickReplies?.length
+    ? { text, quick_replies: quickReplies.map((q) => ({ content_type: "text", title: q.title, payload: q.payload })) }
+    : { text };
+
+export function sendDirectMessage(recipientId: string, text: string, quickReplies?: QuickReply[] | null) {
+  return graphRequest("POST", `/me/messages`, { recipient: { id: recipientId }, message: withQuickReplies(text, quickReplies) });
 }
 
 export type MetaConnectionTest =
@@ -94,8 +100,8 @@ export async function testMetaConnection(): Promise<MetaConnectionTest> {
 }
 
 /** DM to the author of a comment (Instagram "private reply"); allowed once per comment, within 7 days. */
-export function sendPrivateReply(commentId: string, text: string) {
-  return graphRequest("POST", `/me/messages`, { recipient: { comment_id: commentId }, message: { text } });
+export function sendPrivateReply(commentId: string, text: string, quickReplies?: QuickReply[] | null) {
+  return graphRequest("POST", `/me/messages`, { recipient: { comment_id: commentId }, message: withQuickReplies(text, quickReplies) });
 }
 
 /** The account whose media to list: "me" with an Instagram Login token, else the configured IG account id. */
