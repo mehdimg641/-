@@ -178,5 +178,40 @@ export async function listMediaComments(mediaId: string) {
   const comments = await graphList<Comment>(`/${encodeURIComponent(mediaId)}/comments?fields=id,text,timestamp,username,from&limit=50`, 4);
   return comments
     .filter((c) => c.text)
-    .map((c) => ({ id: String(c.id), text: c.text!, username: c.from?.username ?? c.username ?? null, fromId: c.from?.id ? String(c.from.id) : null }));
+    .map((c) => ({ id: String(c.id), text: c.text!, username: c.from?.username ?? c.username ?? null, fromId: c.from?.id ? String(c.from.id) : null, at: graphTime(c.timestamp) }));
+}
+
+function graphTime(value: string | undefined) {
+  const date = value ? new Date(value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+type GraphMessage = { id: string; created_time?: string; message?: string; from?: { id?: string; username?: string } };
+
+/** Recent DMs of the connected account (Instagram Login only): up to 10 messages of the 25 latest conversations. */
+export async function listRecentMessages() {
+  requireInstagramLogin();
+  type Conversation = { id: string; messages?: { data?: GraphMessage[] } };
+  let conversations: Conversation[];
+  try {
+    conversations = await graphList<Conversation>("/me/conversations?platform=instagram&fields=messages.limit(10){id,created_time,from,message}&limit=25", 1);
+  } catch (error) {
+    // Some accounts reject nested fields; fall back to one request per conversation and message.
+    if (!(error instanceof MetaApiError)) throw error;
+    const ids = await graphList<{ id: string }>("/me/conversations?platform=instagram&limit=10", 1);
+    conversations = [];
+    for (const { id } of ids) {
+      const refs = (await graphRequest("GET", `/${encodeURIComponent(id)}?fields=messages`)) as { messages?: { data?: Array<{ id: string }> } };
+      const data: GraphMessage[] = [];
+      for (const ref of (refs.messages?.data ?? []).slice(0, 5)) {
+        data.push((await graphRequest("GET", `/${encodeURIComponent(ref.id)}?fields=id,created_time,from,message`)) as GraphMessage);
+      }
+      conversations.push({ id, messages: { data } });
+    }
+  }
+  return conversations.flatMap((c) =>
+    (c.messages?.data ?? [])
+      .filter((m) => m.message && m.from?.id)
+      .map((m) => ({ id: String(m.id), text: m.message!, fromId: String(m.from!.id), username: m.from!.username ?? null, at: graphTime(m.created_time) })),
+  );
 }

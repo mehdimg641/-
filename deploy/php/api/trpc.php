@@ -183,6 +183,12 @@ function procedures(): array
                 'serverVersion' => installed_version()];
         })],
         'inbox.threads' => ['query', $admin(function () { return build_threads(); })],
+        // Pulls recent comments and DMs that arrived before the webhook worked.
+        'inbox.importHistory' => ['mutation', $admin(function () {
+            $accountId = allowed_account_ids()[0] ?? '';
+            if ($accountId === '') throw new ApiError('PRECONDITION_FAILED', 'ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید');
+            return meta_call(function () use ($accountId) { return import_history($accountId); });
+        })],
         'inbox.stats' => ['query', $admin(function () { return inbox_stats(); })],
         'inbox.markRead' => ['mutation', $admin(function ($in) {
             if (!in_array($in['kind'] ?? null, ['comment', 'dm'], true)) throw new ApiError('BAD_REQUEST', 'kind نامعتبر است');
@@ -304,7 +310,8 @@ function procedures(): array
             }
             $counts = db()->query("SELECT kind, COUNT(*) n FROM igEvents GROUP BY kind")->fetchAll(PDO::FETCH_KEY_PAIR);
             return ['webhookLog' => list_webhook_log(20), 'subscription' => $subscription,
-                'counts' => ['comments' => (int) ($counts['comment'] ?? 0), 'dms' => (int) ($counts['dm'] ?? 0)]];
+                'counts' => ['comments' => (int) ($counts['comment'] ?? 0), 'dms' => (int) ($counts['dm'] ?? 0),
+                    'igComments' => (int) db()->query("SELECT COALESCE(SUM(commentsCount), 0) FROM igMedia")->fetchColumn()]];
         })],
         'settings.subscribeWebhooks' => ['mutation', $admin(function () { return meta_call('subscribe_webhooks'); })],
     ];

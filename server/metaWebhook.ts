@@ -40,6 +40,8 @@ export type IncomingEvent = {
   username: string | null;
   text: string;
   mediaId: string | null;
+  /** When it was written; set for imported history, webhooks use the arrival time. */
+  at?: Date | null;
 };
 
 function constantTimeEqual(a: string, b: string) {

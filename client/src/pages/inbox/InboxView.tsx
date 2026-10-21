@@ -6,6 +6,7 @@ import {
   Bot,
   Check,
   Clock3,
+  Download,
   Inbox,
   MessageCircle,
   MessageSquareText,
@@ -21,7 +22,25 @@ import {
 } from "lucide-react";
 import { filterInboxThreads, type ApprovalItem, type InboxChannel, type InboxThread } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
+import type { RouterOutputs } from "./types";
 import { clock, errorMessage, faNum, IconButton, relativeTime, StatusPill } from "./ui";
+
+type HistoryResult = RouterOutputs["inbox"]["importHistory"];
+
+/** Says what the history import found and, when Meta hid comments, why (Development mode, not the token). */
+function historyMessage(r: HistoryResult) {
+  const parts: string[] = [];
+  const c = r.comments;
+  if (c.posts === 0) parts.push("هیچ پستی با کامنت پیدا نشد");
+  else parts.push(`از ${faNum(c.posts)} پست، ${faNum(c.fetched)} کامنت خوانده شد و ${faNum(c.imported)} کامنت تازه وارد شد`);
+  if (r.dms.error) parts.push(`دایرکت‌ها دریافت نشد: ${r.dms.error}`);
+  else parts.push(`${faNum(r.dms.fetched)} دایرکت خوانده شد و ${faNum(r.dms.imported)} دایرکت تازه وارد شد`);
+  let text = parts.join("؛ ") + ".";
+  if (c.hidden > 0) {
+    text += ` اینستاگرام ${faNum(c.hidden)} کامنت را گزارش کرد ولی متنشان را نداد. توکن مشکلی ندارد (درخواست بدون خطا انجام شد)؛ برنامهٔ Meta در حالت Development است و Meta پیام کسانی را که در App roles نیستند پنهان می‌کند. بعد از Live شدن برنامه، همین دکمه را دوباره بزنید.`;
+  }
+  return { ok: c.hidden === 0 && !r.dms.error, text };
+}
 
 type Props = {
   threads: InboxThread[];
@@ -41,6 +60,20 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const importHistory = trpc.inbox.importHistory.useMutation({
+    onSuccess: (r) => {
+      setHistoryNotice(historyMessage(r));
+      utils.inbox.invalidate();
+      utils.posts.invalidate();
+      utils.settings.diagnostics.invalidate();
+    },
+    onError: (e) => setHistoryNotice({ ok: false, text: errorMessage(e) }),
+  });
+  const runImport = () => {
+    setHistoryNotice(null);
+    importHistory.mutate();
+  };
 
   const visibleThreads = useMemo(() => filterInboxThreads(threads, search, filter, channelFilter), [threads, search, filter, channelFilter]);
   const selectedThread = threads.find((thread) => thread.id === selectedId) ?? visibleThreads[0] ?? threads[0];
@@ -92,10 +125,12 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
           <p>تمام گفتگوهای مهم اینستاگرام، در یک نمای عملیاتی برای تیم فروش.</p>
         </div>
         <div className="heading-actions">
+          <button className="secondary-button" disabled={importHistory.isPending} onClick={runImport}><Download size={16} /> {importHistory.isPending ? "در حال دریافت..." : "دریافت پیام‌های قبلی"}</button>
           <button className="secondary-button" onClick={() => setShowFilters((value) => !value)}><SlidersHorizontal size={16} /> فیلترها</button>
           <button className="primary-button" onClick={onOpenAutomation}><Sparkles size={16} /> قوانین و صف تأیید</button>
         </div>
       </section>
+      {historyNotice && <div className={historyNotice.ok ? "settings-success" : "settings-warning"}>{historyNotice.ok ? <Check size={16} /> : <AlertCircle size={16} />}<span>{historyNotice.text}</span></div>}
 
       <section className="metric-grid">
         <div className="metric-card accent-gold"><div className="metric-icon"><Inbox size={18} /></div><span>کل گفتگوها</span><strong>{faNum(threads.length)}</strong><em className="muted-text">کامنت و دایرکت</em></div>
@@ -139,7 +174,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
               </button>
             ))}
             {loading && threads.length === 0 && <div className="empty-state"><Clock3 size={24} /><b>در حال بارگذاری...</b></div>}
-            {!loading && threads.length === 0 && <div className="empty-state"><Inbox size={24} /><b>هنوز پیامی نرسیده</b><span>پس از اتصال وب‌هوک Meta، کامنت‌ها و دایرکت‌ها اینجا نمایش داده می‌شوند.</span></div>}
+            {!loading && threads.length === 0 && <div className="empty-state"><Inbox size={24} /><b>هنوز پیامی نرسیده</b><span>پیام‌های تازه از وبهوک Meta می‌آیند. برای کامنت‌ها و دایرکت‌های قبلی «دریافت پیام‌های قبلی» را بزنید.</span><button className="secondary-button" disabled={importHistory.isPending} onClick={runImport}><Download size={15} /> دریافت پیام‌های قبلی</button></div>}
             {threads.length > 0 && visibleThreads.length === 0 && <div className="empty-state"><Search size={24} /><b>موردی پیدا نشد</b><span>فیلتر یا عبارت جست‌وجو را تغییر دهید.</span></div>}
           </div>
         </section>

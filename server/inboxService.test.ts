@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRulesToUnanswered, buildThreads, importPostComments, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
+import { applyRulesToUnanswered, buildThreads, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
 import type { IncomingEvent } from "./metaWebhook";
 
@@ -178,5 +178,45 @@ describe("importPostComments", () => {
     const comments = await postComments(store, "m1");
     expect(comments.map((c) => c.threadId).sort()).toEqual(["comment:77", "comment:c:c4", "comment:u:buyer1"]);
     expect((await importPostComments(store, "m1", "acc")).alreadyThere).toBe(3);
+  });
+});
+
+describe("importHistory", () => {
+  it("imports comments and DMs with their original time, drafts nothing and reports hidden comments", async () => {
+    const calls: string[] = [];
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (url.includes("/subscribed_apps")) return json(init?.method === "POST" ? { success: true } : { data: [] });
+      if (url.includes("/me/media")) {
+        return json({ data: [
+          { id: "p1", caption: "تیرآهن", timestamp: "2026-10-18T08:00:00+0000", comments_count: 2 },
+          { id: "p2", caption: "ورق", timestamp: "2026-10-17T08:00:00+0000", comments_count: 5 },
+          { id: "p3", caption: "بدون کامنت", timestamp: "2026-10-16T08:00:00+0000", comments_count: 0 },
+        ] });
+      }
+      if (url.includes("/p1/comments")) return json({ data: [{ id: "c1", text: "قیمت؟", timestamp: "2026-10-18T09:00:00+0000", from: { id: "77", username: "buyer" } }] });
+      if (url.includes("/p2/comments")) return json({ data: [] });
+      if (url.includes("/me/conversations")) {
+        return json({ data: [{ id: "t1", messages: { data: [
+          { id: "mid1", created_time: "2026-10-19T10:00:00+0000", message: "سلام، قیمت ورق؟", from: { id: "55", username: "customer" } },
+          { id: "mid2", created_time: "2026-10-19T10:05:00+0000", message: "سلام، در خدمتیم", from: { id: "acc", username: "sepandsteel" } },
+        ] } }] });
+      }
+      return json({ username: "sepandsteel" });
+    });
+    const store = new MemoryInboxStore();
+    const result = await importHistory(store, "acc");
+    expect(result.comments).toEqual({ posts: 2, reported: 7, fetched: 1, imported: 1, hidden: 5 });
+    expect(result.dms).toEqual({ fetched: 1, imported: 1, error: null });
+    expect(calls).toContain("POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages");
+    const events = await store.listEvents(10);
+    expect(events.map((e) => [e.kind, e.externalId, e.createdAt.toISOString(), e.isRead])).toEqual(
+      expect.arrayContaining([
+        ["comment", "c1", "2026-10-18T09:00:00.000Z", true],
+        ["dm", "mid1", "2026-10-19T10:00:00.000Z", true],
+      ]),
+    );
+    expect(await store.listReplies({})).toEqual([]);
   });
 });

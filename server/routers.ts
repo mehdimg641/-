@@ -8,6 +8,7 @@ import { adminProcedure, publicProcedure, router } from "./_core/trpc";
 import {
   applyRulesToUnanswered,
   buildThreads,
+  importHistory,
   importPostComments,
   listPosts,
   postComments,
@@ -81,6 +82,13 @@ const inboxRouter = router({
     };
   }),
   threads: adminProcedure.query(async () => buildThreads(await getInboxStore())),
+  /** Pulls recent comments and DMs that arrived before the webhook worked. */
+  importHistory: adminProcedure.mutation(async () => {
+    await refreshMetaSettings();
+    const accountId = allowedAccountIds()[0] ?? "";
+    if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید" });
+    return meta(async () => importHistory(await getInboxStore(), accountId));
+  }),
   stats: adminProcedure.query(async () => inboxStats(await getInboxStore())),
   markRead: adminProcedure
     .input(z.object({ kind: z.enum(["comment", "dm"]), senderId: z.string().min(1) }))
@@ -218,7 +226,8 @@ const settingsRouter = router({
   testMeta: adminProcedure.mutation(async () => testMetaConnection()),
   /** Why the inbox may be empty: does Meta call in, and is the account subscribed to the webhook fields? */
   diagnostics: adminProcedure.query(async () => {
-    const events = await (await getInboxStore()).listEvents(5000);
+    const store = await getInboxStore();
+    const [events, media] = await Promise.all([store.listEvents(5000), store.listMedia()]);
     let subscription: { ok: true; fields: string[]; missing: string[] } | { ok: false; error: string };
     try {
       subscription = { ok: true, ...(await getWebhookSubscription()) };
@@ -228,7 +237,12 @@ const settingsRouter = router({
     return {
       webhookLog: listWebhookLog(20),
       subscription,
-      counts: { comments: events.filter((e) => e.kind === "comment").length, dms: events.filter((e) => e.kind === "dm").length },
+      counts: {
+        comments: events.filter((e) => e.kind === "comment").length,
+        dms: events.filter((e) => e.kind === "dm").length,
+        /** What Instagram reported for the synced posts; far more than `comments` means Meta hides them. */
+        igComments: media.reduce((sum, m) => sum + (m.commentsCount ?? 0), 0),
+      },
     };
   }),
   subscribeWebhooks: adminProcedure.mutation(async () => meta(subscribeWebhooks)),

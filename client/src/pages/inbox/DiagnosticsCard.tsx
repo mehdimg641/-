@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { AlertCircle, CheckCircle2, RefreshCw, Stethoscope } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import type { InboxStatus, RouterOutputs } from "./types";
@@ -24,6 +25,17 @@ export function DiagnosticsCard({ status }: { status: InboxStatus | undefined })
   const data = diag.data;
   const sub = data?.subscription;
   // A payload for an account outside the allowlist is dropped without a trace in the inbox.
+  // Subscribing is harmless and nothing arrives without it, so do it once without asking.
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (sub?.ok && sub.missing.length > 0 && !autoTried.current) {
+      autoTried.current = true;
+      subscribe.mutate();
+    }
+  }, [sub, subscribe]);
+  const received = (data?.webhookLog ?? []).some((e) => e.outcome === "received");
+  // Instagram reports far more comments than it hands out: Meta hides people without an app role.
+  const hiddenByDevMode = Boolean(data && data.counts.igComments > data.counts.comments);
   const foreign = Array.from(new Set((data?.webhookLog ?? []).flatMap((e) => e.accounts).filter((id) => allowed.length > 0 && !allowed.includes(id))));
 
   return (
@@ -60,7 +72,16 @@ export function DiagnosticsCard({ status }: { status: InboxStatus | undefined })
 
       <div className="diag-section">
         <b>۲. پیام‌های ذخیره‌شده</b>
-        <span>{data ? `${faNum(data.counts.comments)} کامنت · ${faNum(data.counts.dms)} دایرکت` : "..."}</span>
+        <span>{data ? `${faNum(data.counts.comments)} کامنت · ${faNum(data.counts.dms)} دایرکت · اینستاگرام برای پست‌های همگام‌شده ${faNum(data.counts.igComments)} کامنت گزارش می‌کند` : "..."}</span>
+        {hiddenByDevMode && !received && (
+          <div className="settings-warning">
+            <AlertCircle size={16} />
+            <span>
+              اینستاگرام کامنت‌ها را می‌شمارد ولی متنشان را نمی‌دهد و وبهوک هم چیزی نفرستاده: برنامهٔ Meta در حالت <b>Development</b> است.
+              توکن مشکلی ندارد و ساختن توکن تازه لازم نیست. تا برنامه Live نشود، فقط پیام حساب‌هایی که در App roles (مثلاً Instagram Tester) هستند می‌آید.
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="diag-section">

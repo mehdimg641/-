@@ -5,6 +5,14 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  {
+    version: "1.6.0",
+    items: [
+      "دکمهٔ «دریافت پیام‌های قبلی» در صندوق ورودی: کامنت‌های پست‌های اخیر و دایرکت‌های اخیر با زمان اصلی‌شان",
+      "اشتراک وبهوک (comments و messages) خودکار فعال می‌شود",
+      "تشخیص درست: وقتی اینستاگرام متن کامنت‌ها را نمی‌دهد، علت حالت Development برنامهٔ Meta است نه توکن",
+    ],
+  },
   { version: "1.5.1", items: ["صفحه‌های حریم خصوصی و حذف اطلاعات برای Live کردن برنامهٔ Meta (/privacy.html و /data-deletion.html)"] },
   {
     version: "1.5.0",

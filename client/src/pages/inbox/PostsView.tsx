@@ -57,7 +57,7 @@ export function PostsView() {
 function importMessage(r: RouterOutputs["posts"]["importComments"], post: Post) {
   if (!r.fetched) {
     if (!post.igComments) return "اینستاگرام برای این پست کامنتی گزارش نمی‌کند.";
-    return `اینستاگرام می‌گوید این پست ${faNum(post.igComments)} کامنت دارد ولی متن هیچ‌کدام را به برنامه نداد. یعنی توکن دسترسی instagram_business_manage_comments را ندارد یا برنامهٔ Meta هنوز در حالت Development است؛ توکن را با این دسترسی دوباره بسازید و در تنظیمات ذخیره کنید.`;
+    return `اینستاگرام می‌گوید این پست ${faNum(post.igComments)} کامنت دارد ولی متنشان را نداد. توکن مشکلی ندارد (درخواست بدون خطا انجام شد و ساختن توکن تازه لازم نیست)؛ برنامهٔ Meta در حالت Development است و Meta کامنت کسانی را که در App roles نیستند پنهان می‌کند. بعد از Live شدن برنامه دوباره امتحان کنید؛ تا آن موقع کامنت حساب‌هایی که Instagram Tester هستند می‌آید.`;
   }
   const parts = [`${faNum(r.fetched)} کامنت از اینستاگرام خوانده شد`];
   if (r.imported) parts.push(`${faNum(r.imported)} کامنت تازه وارد شد و پیش‌نویس‌هایش در صف تأیید است (ارسال خودکار نمی‌شوند)`);

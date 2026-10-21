@@ -1,7 +1,17 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
 import { channelOf, type ApprovalItem, type InboxThread } from "@shared/inbox";
 import type { InboxStore } from "./inboxStore";
-import { listMediaComments, listRecentMedia, ownUsername, replyToComment, sendDirectMessage, sendPrivateReply } from "./metaGraph";
+import {
+  getWebhookSubscription,
+  listMediaComments,
+  listRecentMedia,
+  listRecentMessages,
+  ownUsername,
+  replyToComment,
+  sendDirectMessage,
+  sendPrivateReply,
+  subscribeWebhooks,
+} from "./metaGraph";
 import type { IncomingEvent } from "./metaWebhook";
 import { decideReply } from "./replyRules";
 import { metaSetting } from "./metaSettings";
@@ -31,7 +41,11 @@ async function createDrafts(store: InboxStore, event: IgEvent, decision: NonNull
  * send right away (auto-reply on and rule action "send"); `allowAutoSend: false` keeps everything
  * in the approval queue (used for imported old comments).
  */
-export async function ingestEvents(store: InboxStore, events: IncomingEvent[], options: { allowAutoSend?: boolean } = {}) {
+/**
+ * Stores events and drafts the replies their rules call for. Imported history passes
+ * `draft: false` (old messages shouldn't flood the approval queue) and `read: true`.
+ */
+export async function ingestEvents(store: InboxStore, events: IncomingEvent[], options: { allowAutoSend?: boolean; draft?: boolean; read?: boolean } = {}) {
   const [rules, templates] = events.length ? await Promise.all([store.listRules(), store.listTemplates()]) : [[], []];
   const autoSend = (options.allowAutoSend ?? true) && isAutoReplyEnabled();
   const toSend: number[] = [];
@@ -40,13 +54,14 @@ export async function ingestEvents(store: InboxStore, events: IncomingEvent[], o
 
   for (const event of events) {
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
-    const saved = await store.insertEvent({ ...event, ruleId: decision?.rule.id ?? null });
+    const { at, ...fields } = event;
+    const saved = await store.insertEvent({ ...fields, ruleId: decision?.rule.id ?? null, ...(at ? { createdAt: at } : {}), ...(options.read ? { isRead: true } : {}) });
     if (!saved) {
       duplicates++;
       continue;
     }
     stored++;
-    if (!decision) continue;
+    if (!decision || options.draft === false) continue;
     const ids = await createDrafts(store, saved, decision);
     if (autoSend && decision.rule.action === "send") toSend.push(...ids);
   }
@@ -340,7 +355,7 @@ export async function postComments(store: InboxStore, mediaId: string): Promise<
  * Imports a post's existing comments (from before the webhook was connected). Rules draft
  * replies for them, but nothing is sent automatically: old comments always wait for approval.
  */
-export async function importPostComments(store: InboxStore, mediaId: string, accountId: string) {
+export async function importPostComments(store: InboxStore, mediaId: string, accountId: string, options: { draft?: boolean; read?: boolean } = {}) {
   const comments = await listMediaComments(mediaId);
   // Meta can leave out a comment's author; then the account's own comments are recognised by username.
   const own = comments.some((c) => !c.fromId) ? await ownUsername() : null;
@@ -353,8 +368,53 @@ export async function importPostComments(store: InboxStore, mediaId: string, acc
     }
     // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
     const senderId = c.fromId ?? (c.username ? `u:${c.username}` : `c:${c.id}`);
-    events.push({ accountId, kind: "comment", externalId: c.id, senderId, username: c.username, text: c.text, mediaId });
+    events.push({ accountId, kind: "comment", externalId: c.id, senderId, username: c.username, text: c.text, mediaId, at: c.at });
   }
-  const result = await ingestEvents(store, events, { allowAutoSend: false });
+  const result = await ingestEvents(store, events, { allowAutoSend: false, ...options });
   return { fetched: comments.length, imported: result.stored, alreadyThere: result.duplicates, own: skippedOwn };
+}
+
+/** Posts whose comments the history import reads; each one is a Graph call. */
+const HISTORY_POSTS = 12;
+
+/**
+ * Fills the inbox with what happened before the webhook worked: comments on recent posts and recent
+ * DMs. Nothing is drafted or sent; "apply rules to unanswered" does that on request.
+ * `hiddenComments` counts comments Instagram reports but won't return, which is what Meta does
+ * for people without a role on the app while it is in Development mode.
+ */
+export async function importHistory(store: InboxStore, accountId: string) {
+  // Without this subscription Meta sends no new events either.
+  const subscription = await getWebhookSubscription().catch(() => null);
+  if (subscription?.missing.length) await subscribeWebhooks().catch(() => undefined);
+
+  await syncPosts(store);
+  const posts = (await store.listMedia())
+    .filter((m) => (m.commentsCount ?? 0) > 0)
+    .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0))
+    .slice(0, HISTORY_POSTS);
+  const comments = { posts: posts.length, reported: 0, fetched: 0, imported: 0, hidden: 0 };
+  for (const post of posts) {
+    const result = await importPostComments(store, post.id, accountId, { draft: false, read: true });
+    comments.reported += post.commentsCount ?? 0;
+    comments.fetched += result.fetched;
+    comments.imported += result.imported;
+    if (!result.fetched) comments.hidden += post.commentsCount ?? 0;
+  }
+
+  const dms = { fetched: 0, imported: 0, error: null as string | null };
+  try {
+    const own = await ownUsername();
+    const messages = (await listRecentMessages()).filter((m) => m.fromId !== accountId && (!own || m.username !== own));
+    const result = await ingestEvents(
+      store,
+      messages.map((m) => ({ accountId, kind: "dm" as const, externalId: m.id, senderId: m.fromId, username: m.username, text: m.text, mediaId: null, at: m.at })),
+      { allowAutoSend: false, draft: false, read: true },
+    );
+    dms.fetched = messages.length;
+    dms.imported = result.stored;
+  } catch (error) {
+    dms.error = error instanceof Error ? error.message : String(error);
+  }
+  return { comments, dms };
 }

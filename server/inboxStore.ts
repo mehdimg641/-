@@ -27,7 +27,7 @@ export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "deci
 export interface InboxStore {
   readonly persistent: boolean;
   /** Returns null when the event was already stored (Meta retry or duplicate delivery). */
-  insertEvent(event: Omit<InsertIgEvent, "id" | "createdAt" | "isRead">): Promise<IgEvent | null>;
+  insertEvent(event: Omit<InsertIgEvent, "id">): Promise<IgEvent | null>;
   getEvent(id: number): Promise<IgEvent | undefined>;
   listEvents(limit: number): Promise<IgEvent[]>;
   markRead(kind: IgEvent["kind"], senderId: string): Promise<void>;
@@ -84,7 +84,7 @@ export class MemoryInboxStore implements InboxStore {
     this.templates = seedTemplates.map((t) => ({ id: this.nextId++, title: t.title, category: t.category ?? "", text: t.text, createdAt: now, updatedAt: now }));
   }
 
-  async insertEvent(event: Omit<InsertIgEvent, "id" | "createdAt" | "isRead">) {
+  async insertEvent(event: Omit<InsertIgEvent, "id">) {
     const duplicate = this.events.some(
       (e) => e.accountId === event.accountId && e.kind === event.kind && e.externalId === event.externalId,
     );
@@ -99,8 +99,8 @@ export class MemoryInboxStore implements InboxStore {
       text: event.text,
       mediaId: event.mediaId ?? null,
       ruleId: event.ruleId ?? null,
-      isRead: false,
-      createdAt: new Date(),
+      isRead: event.isRead ?? false,
+      createdAt: event.createdAt ?? new Date(),
     };
     this.events.push(stored);
     return stored;
@@ -260,7 +260,7 @@ export class DrizzleInboxStore implements InboxStore {
 
   constructor(private db: Db) {}
 
-  async insertEvent(event: Omit<InsertIgEvent, "id" | "createdAt" | "isRead">) {
+  async insertEvent(event: Omit<InsertIgEvent, "id">) {
     try {
       const [{ id }] = await this.db.insert(igEvents).values(event).$returningId();
       return (await this.getEvent(id)) ?? null;
