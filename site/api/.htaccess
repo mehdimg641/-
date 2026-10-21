@@ -1,9 +1,9 @@
-# Only trpc.php and webhook.php are entry points; everything else here is private.
+# Only trpc.php, webhook.php and page.php are entry points; everything else here is private.
 <IfModule mod_authz_core.c>
   <FilesMatch "\.php$">
     Require all denied
   </FilesMatch>
-  <FilesMatch "^(trpc|webhook)\.php$">
+  <FilesMatch "^(trpc|webhook|page)\.php$">
     Require all granted
   </FilesMatch>
 </IfModule>
@@ -12,7 +12,7 @@
     Order allow,deny
     Deny from all
   </FilesMatch>
-  <FilesMatch "^(trpc|webhook)\.php$">
+  <FilesMatch "^(trpc|webhook|page)\.php$">
     Order allow,deny
     Allow from all
   </FilesMatch>
