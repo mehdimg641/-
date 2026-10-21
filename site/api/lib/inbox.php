@@ -417,7 +417,9 @@ function build_threads(): array
 function list_approvals(): array
 {
     $style = rule_style(list_rules());
-    $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt FROM replies r JOIN igEvents e ON e.id = r.eventId
+    $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt,
+        EXISTS(SELECT 1 FROM replies s WHERE s.eventId = r.eventId AND s.status = 'sent') AS answered
+        FROM replies r JOIN igEvents e ON e.id = r.eventId
         WHERE r.status IN ('pending', 'failed') ORDER BY r.createdAt, r.id")->fetchAll();
     $items = [];
     foreach ($rows as $row) {
@@ -435,6 +437,7 @@ function list_approvals(): array
             'replyChannel' => $reply['channel'],
             'buttons' => array_column($reply['quickReplies'] ?? [], 'title'),
             'receivedAt' => db_time($row['receivedAt']),
+            'answered' => (bool) $row['answered'],
             'mediaId' => $row['mediaId'],
             'tone' => $s['tone'],
             'status' => $reply['status'],
