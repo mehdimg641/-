@@ -11,6 +11,8 @@ DirectoryIndex index.html
 
   RewriteRule ^api/trpc(/.*)?$ api/trpc.php [QSA,L]
   RewriteRule ^api/meta/webhook/?$ api/webhook.php [QSA,L]
+  # Meta's privacy policy check needs a 200; LiteSpeed answers its byte-range request with 206.
+  RewriteRule ^(privacy|data-deletion)\.html$ api/page.php?name=$1 [L]
 
   # Single-page app: unknown paths load the dashboard.
   RewriteCond %{REQUEST_FILENAME} !-f
