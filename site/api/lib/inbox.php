@@ -343,6 +343,36 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     }
 }
 
+const DM_INVITE_TEXT = 'سلام {{username}}، لطفاً به دایرکت پیج پیام بدهید تا جواب‌تان را همان‌جا بفرستیم 🌹';
+
+/** The operator sent this one by hand in the Instagram app; record it as sent without calling Meta. */
+function mark_sent_manually(int $replyId, int $operatorId, ?string $editedText = null): void
+{
+    $reply = get_reply($replyId);
+    if (!$reply) throw new ApiError('CONFLICT', 'پاسخ پیدا نشد');
+    $text = trim($editedText ?? $reply['text']);
+    if ($text === '') throw new ApiError('CONFLICT', 'متن پاسخ خالی است');
+    if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
+    db()->prepare("UPDATE replies SET text = ?, status = 'sent', error = NULL, decidedBy = ?, sentAt = UTC_TIMESTAMP() WHERE id = ?")->execute([$text, $operatorId, $replyId]);
+}
+
+/**
+ * Turns a private DM to a commenter into a reply under the comment (which has no deadline), by
+ * default asking them to DM the page. It becomes the operator's own draft, so rule changes leave it.
+ */
+function move_to_public_reply(int $replyId, int $operatorId, ?string $editedText = null): void
+{
+    $reply = get_reply($replyId);
+    if (!$reply) throw new ApiError('CONFLICT', 'پاسخ پیدا نشد');
+    $event = get_event($reply['eventId']);
+    if (!$event || $event['kind'] !== 'comment' || $reply['channel'] !== 'private') throw new ApiError('CONFLICT', 'فقط دایرکت به نویسندهٔ کامنت را می‌شود زیر کامنت فرستاد');
+    $text = trim($editedText ?? render_template(DM_INVITE_TEXT, (string) ($event['username'] ?? '')));
+    if ($text === '') throw new ApiError('CONFLICT', 'متن پاسخ خالی است');
+    if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
+    db()->prepare("UPDATE replies SET channel = 'reply', source = 'manual', quickReplies = NULL, text = ?, status = 'pending', error = NULL, decidedBy = ? WHERE id = ?")
+        ->execute([$text, $operatorId, $replyId]);
+}
+
 function reject_reply(int $replyId, int $operatorId): void
 {
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
