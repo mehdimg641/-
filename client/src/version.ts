@@ -5,6 +5,7 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  { version: "1.6.8", items: ["صفحه‌های حریم خصوصی بدون کش LiteSpeed و بدون Content-Length فرستاده می‌شوند تا ربات Meta کد ۲۰۰ بگیرد"] },
   { version: "1.6.7", items: ["صفحه‌های حریم خصوصی و حذف اطلاعات همیشه با کد ۲۰۰ جواب می‌دهند (ربات Meta کد ۲۰۶ را رد می‌کرد)"] },
   { version: "1.6.6", items: ["دکمهٔ «ویرایش» کنار شناسهٔ حساب در کارت «حساب‌های اینستاگرام» که مستقیم به فیلد قابل ویرایش می‌رود"] },
   { version: "1.6.5", items: ["شناسهٔ حساب اینستاگرام با ارقام فارسی (صفحه‌کلید فارسی) و ویرگول فارسی هم ذخیره می‌شود"] },
