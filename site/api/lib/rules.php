@@ -39,8 +39,30 @@ function render_template(string $template, string $username): string
 {
     $rendered = str_replace('{{username}}', $username, $template);
     if ($username !== '') return $rendered;
-    // Without a username, "سلام ، ..." would read oddly; collapse the empty slot.
-    return trim(preg_replace('/\s{2,}/u', ' ', preg_replace('/\s+،/u', '،', $rendered)));
+    // Without a username, "سلام ، ..." would read oddly; collapse the empty slot. Only spaces and
+    // tabs: line breaks carry paragraphs and the "---" message separators.
+    return trim(preg_replace('/[ \t]{2,}/u', ' ', preg_replace('/[ \t]+،/u', '،', $rendered)));
+}
+
+const MAX_MESSAGE_LENGTH = 1000;
+
+/** A line holding only "---" splits a reply into separate messages, sent in order. */
+function split_messages(string $text): array
+{
+    $parts = preg_split('/^[ \t]*-{3,}[ \t]*$/mu', $text) ?: [];
+    return array_values(array_filter(array_map('trim', $parts), 'strlen'));
+}
+
+/** A private reply to a comment can only be one message, so its parts become paragraphs. */
+function join_messages(string $text): string
+{
+    return implode("\n\n", split_messages($text));
+}
+
+function messages_fit(string $text): bool
+{
+    foreach (split_messages($text) as $part) if (mb_strlen($part) > MAX_MESSAGE_LENGTH) return false;
+    return true;
 }
 
 function rule_row(array $row): array
