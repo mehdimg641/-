@@ -188,13 +188,13 @@ function graphTime(value: string | undefined) {
 
 type GraphMessage = { id: string; created_time?: string; message?: string; from?: { id?: string; username?: string } };
 
-/** Recent DMs of the connected account (Instagram Login only): up to 10 messages of the 25 latest conversations. */
+/** Recent DMs of the connected account (Instagram Login only): the last 20 messages (Meta's limit) of up to 50 conversations. */
 export async function listRecentMessages() {
   requireInstagramLogin();
   type Conversation = { id: string; messages?: { data?: GraphMessage[] } };
   let conversations: Conversation[];
   try {
-    conversations = await graphList<Conversation>("/me/conversations?platform=instagram&fields=messages.limit(10){id,created_time,from,message}&limit=25", 1);
+    conversations = await graphList<Conversation>("/me/conversations?platform=instagram&fields=messages.limit(20){id,created_time,from,message}&limit=25", 2);
   } catch (error) {
     // Some accounts reject nested fields; fall back to one request per conversation and message.
     if (!(error instanceof MetaApiError)) throw error;

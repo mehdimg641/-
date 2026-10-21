@@ -33,7 +33,9 @@ function historyMessage(r: HistoryResult) {
   const c = r.comments;
   if (c.posts === 0) parts.push("هیچ پستی با کامنت پیدا نشد");
   else parts.push(`از ${faNum(c.posts)} پست، ${faNum(c.fetched)} کامنت خوانده شد و ${faNum(c.imported)} کامنت تازه وارد شد`);
-  if (r.dms.error) parts.push(`دایرکت‌ها دریافت نشد: ${r.dms.error}`);
+  if (r.dms.error) {
+    parts.push(`دایرکت‌ها دریافت نشد: ${r.dms.error} — در اپ اینستاگرام گزینهٔ «Allow access to messages» (تنظیمات ← Messages and story replies ← Message controls / Connected tools) را روشن کنید و مطمئن شوید دسترسی instagram_business_manage_messages در برنامهٔ Meta اضافه شده است`);
+  }
   else parts.push(`${faNum(r.dms.fetched)} دایرکت خوانده شد و ${faNum(r.dms.imported)} دایرکت تازه وارد شد`);
   let text = parts.join("؛ ") + ".";
   if (c.hidden > 0) {
