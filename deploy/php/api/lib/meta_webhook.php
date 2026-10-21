@@ -7,9 +7,19 @@ const MAX_EVENTS_PER_REQUEST = 1000;
 
 function webhook_challenge($mode, $token, $challenge): ?string
 {
-    $expected = meta_setting('META_WEBHOOK_VERIFY_TOKEN');
+    // Copying from a web page easily picks up a space or newline; neither side may contain one on purpose.
+    $expected = trim(meta_setting('META_WEBHOOK_VERIFY_TOKEN'));
     if ($expected === '' || $mode !== 'subscribe' || !is_string($token) || $challenge === null || $challenge === '') return null;
-    return hash_equals($expected, $token) ? (string) $challenge : null;
+    return hash_equals($expected, trim($token)) ? (string) $challenge : null;
+}
+
+/** "ab…yz (24)": enough to tell two verify tokens apart in the log without writing either one down. */
+function token_hint(?string $value): string
+{
+    $value = trim((string) $value);
+    if ($value === '') return '(empty)';
+    $n = mb_strlen($value);
+    return ($n <= 6 ? str_repeat('•', $n) : mb_substr($value, 0, 2) . '…' . mb_substr($value, -2)) . " ($n)";
 }
 
 /** X-Hub-Signature-256 over the raw body. Fails closed without an app secret. */

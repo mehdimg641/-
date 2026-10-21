@@ -5,6 +5,14 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  {
+    version: "1.6.3",
+    items: [
+      "Verify Token وبهوک با فاصله یا خط جدید اضافه (از کپی) هم پذیرفته می‌شود",
+      "در گزارش وبهوک، وقتی توکن یکی نیست، دو حرف اول و آخر و طول هر دو توکن نشان داده می‌شود",
+      "هشدار وقتی Verify Token ساخته شده ولی هنوز ذخیره نشده",
+    ],
+  },
   { version: "1.6.2", items: ["دریافت دایرکت‌های قبلی: ۲۰ پیام آخر هر مکالمه (حداکثر Meta) از ۵۰ مکالمهٔ اخیر"] },
   { version: "1.6.1", items: ["باز کردن آدرس وبهوک در مرورگر به‌جای «invalid» پیام «وبهوک فعال است» نشان می‌دهد"] },
   {

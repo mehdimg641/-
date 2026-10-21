@@ -55,9 +55,18 @@ export function isMetaWebhookConfigured() {
 }
 
 export function getMetaWebhookChallenge(mode: unknown, token: unknown, challenge: unknown) {
-  const expected = metaSetting("META_WEBHOOK_VERIFY_TOKEN");
+  // Copying from a web page easily picks up a space or newline; neither side may contain one on purpose.
+  const expected = metaSetting("META_WEBHOOK_VERIFY_TOKEN").trim();
   if (!expected || mode !== "subscribe" || typeof token !== "string" || !challenge) return null;
-  return constantTimeEqual(token, expected) ? String(challenge) : null;
+  return constantTimeEqual(token.trim(), expected) ? String(challenge) : null;
+}
+
+/** "ab…yz (24)": enough to tell two verify tokens apart in the log without writing either one down. */
+export function tokenHint(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "(empty)";
+  const chars = Array.from(text);
+  return `${chars.length <= 6 ? "•".repeat(chars.length) : `${chars.slice(0, 2).join("")}…${chars.slice(-2).join("")}`} (${chars.length})`;
 }
 
 /** Validates X-Hub-Signature-256. Fails closed when META_APP_SECRET is missing. */
@@ -164,7 +173,12 @@ export function registerMetaWebhook(app: Express) {
       recordWebhook({ method: "GET", status: 200, outcome: "challenge_ok", detail: "" });
       return res.status(200).type("text/plain").send(challenge);
     }
-    recordWebhook({ method: "GET", status: 403, outcome: "challenge_bad_token", detail: "" });
+    recordWebhook({
+      method: "GET",
+      status: 403,
+      outcome: "challenge_bad_token",
+      detail: `Meta sent ${tokenHint(req.query["hub.verify_token"])}, saved here ${tokenHint(metaSetting("META_WEBHOOK_VERIFY_TOKEN"))}`,
+    });
     return res.status(403).json({ error: "Invalid webhook verification token" });
   });
 

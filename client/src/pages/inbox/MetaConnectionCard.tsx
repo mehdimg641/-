@@ -100,7 +100,9 @@ export function MetaConnectionCard() {
           <button type="button" className="secondary-button compact-button" onClick={() => setVerifyToken(randomToken())}><Wand2 size={14} /> ساخت</button>
           <button type="button" className="secondary-button compact-button" disabled={!verifyValue} onClick={() => copy(verifyValue)}><Copy size={14} /></button>
         </div>
-        <small>همین مقدار را در Meta → Webhooks در فیلد Verify token وارد کنید.</small>
+        {verifyToken !== null && verifyToken.trim() !== data.verifyToken.value
+          ? <small className="error-text">این مقدار هنوز ذخیره نشده؛ اول «ذخیره» را بزنید، بعد آن را در Meta وارد کنید. تا ذخیره نکنید سرور مقدار قبلی را می‌شناسد و Meta خطای «couldn't be validated» می‌دهد.</small>
+          : <small>همین مقدار را در Meta → Webhooks در فیلد Verify token وارد کنید (با دکمهٔ کپی، بدون فاصلهٔ اضافه).</small>}
       </label>
 
       <label className="meta-field">
