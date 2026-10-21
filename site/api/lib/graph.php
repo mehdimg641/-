@@ -50,6 +50,11 @@ function graph_request(string $method, string $path, ?array $body = null): array
     $data = parse_graph_json((string) $text);
     if ($status < 200 || $status >= 300) {
         $message = $data['error']['message'] ?? substr((string) $text, 0, 300);
+        $code = $data['error']['code'] ?? null;
+        $subcode = $data['error']['error_subcode'] ?? null;
+        if ((int) $subcode === 2534022 || ((int) $code === 10 && stripos($message, 'allowed window') !== false)) {
+            throw new MetaApiError('مهلت ارسال اینستاگرام گذشته (دایرکت: ۲۴ ساعت بعد از آخرین پیام مشتری؛ دایرکت به نویسندهٔ کامنت: ۷ روز بعد از کامنت).');
+        }
         throw new MetaApiError("Meta API $status: $message");
     }
     return $data;
