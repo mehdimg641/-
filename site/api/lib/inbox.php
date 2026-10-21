@@ -85,7 +85,7 @@ function claim_reply(int $id, array $from): bool
  * Stores new events (Meta retries are ignored via the unique key) and drafts a reply for each
  * match. Returns reply ids to send right away: only when auto-reply is on and the rule says "send".
  */
-function ingest_events(array $events, bool $allowAutoSend = true): array
+function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = true, bool $read = false): array
 {
     if (!$events) return ['stored' => 0, 'duplicates' => 0, 'toSend' => []];
     $rules = list_rules();
@@ -93,16 +93,19 @@ function ingest_events(array $events, bool $allowAutoSend = true): array
     $autoSend = $allowAutoSend && auto_reply_enabled();
     $pdo = db();
     $result = ['stored' => 0, 'duplicates' => 0, 'toSend' => []];
-    $insert = $pdo->prepare("INSERT IGNORE INTO igEvents (accountId, kind, externalId, senderId, username, text, mediaId, ruleId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    // Imported history keeps the time it was written; webhooks use the arrival time.
+    $insert = $pdo->prepare("INSERT IGNORE INTO igEvents (accountId, kind, externalId, senderId, username, text, mediaId, ruleId, isRead, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))");
     foreach ($events as $e) {
         $decision = decide_reply($rules, $templates, $e['kind'], (string) ($e['username'] ?? ''), $e['text'], $e['mediaId']);
-        $insert->execute([$e['accountId'], $e['kind'], $e['externalId'], $e['senderId'], $e['username'], $e['text'], $e['mediaId'], $decision ? $decision['rule']['id'] : null]);
+        $insert->execute([$e['accountId'], $e['kind'], $e['externalId'], $e['senderId'], $e['username'], $e['text'], $e['mediaId'],
+            $decision ? $decision['rule']['id'] : null, $read ? 1 : 0, $e['at'] ?? null]);
         if ($insert->rowCount() === 0) {
             $result['duplicates']++;
             continue;
         }
         $result['stored']++;
-        if (!$decision) continue;
+        if (!$decision || !$draft) continue;
         $ids = create_drafts((int) $pdo->lastInsertId(), $e['kind'], $decision);
         if ($autoSend && $decision['rule']['action'] === 'send') $result['toSend'] = array_merge($result['toSend'], $ids);
     }
@@ -408,7 +411,7 @@ function post_comments(string $mediaId): array
 }
 
 /** Imports a post's existing comments. Rules draft replies, but old comments always wait for approval. */
-function import_post_comments(string $mediaId, string $accountId): array
+function import_post_comments(string $mediaId, string $accountId, bool $draft = true, bool $read = false): array
 {
     $comments = list_media_comments($mediaId);
     // Meta can leave out a comment's author; then the account's own comments are recognised by username.
@@ -422,8 +425,57 @@ function import_post_comments(string $mediaId, string $accountId): array
         }
         // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
         $senderId = $c['fromId'] ?? ($c['username'] !== null ? 'u:' . $c['username'] : 'c:' . $c['id']);
-        $events[] = ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $senderId, 'username' => $c['username'], 'text' => $c['text'], 'mediaId' => $mediaId];
+        $events[] = ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $senderId, 'username' => $c['username'],
+            'text' => $c['text'], 'mediaId' => $mediaId, 'at' => $c['at']];
     }
-    $result = ingest_events($events, false);
+    $result = ingest_events($events, false, $draft, $read);
     return ['fetched' => count($comments), 'imported' => $result['stored'], 'alreadyThere' => $result['duplicates'], 'own' => $skippedOwn];
+}
+
+/** Posts whose comments the history import reads; each one is a Graph call. */
+const HISTORY_POSTS = 12;
+
+/**
+ * Fills the inbox with what happened before the webhook worked: comments on recent posts and recent
+ * DMs. Nothing is drafted or sent; "apply rules to unanswered" does that on request.
+ * 'hidden' counts comments Instagram reports but won't return, which is what Meta does for people
+ * without a role on the app while it is in Development mode.
+ */
+function import_history(string $accountId): array
+{
+    @set_time_limit(120);
+    // Without this subscription Meta sends no new events either.
+    try {
+        if (get_webhook_subscription()['missing']) subscribe_webhooks();
+    } catch (MetaApiError $e) {
+        // Facebook Login tokens subscribe through the Page; nothing to do here.
+    }
+
+    sync_posts();
+    $posts = db()->query("SELECT id, commentsCount FROM igMedia WHERE commentsCount > 0 ORDER BY postedAt DESC LIMIT " . HISTORY_POSTS)->fetchAll();
+    $comments = ['posts' => count($posts), 'reported' => 0, 'fetched' => 0, 'imported' => 0, 'hidden' => 0];
+    foreach ($posts as $post) {
+        $result = import_post_comments($post['id'], $accountId, false, true);
+        $comments['reported'] += (int) $post['commentsCount'];
+        $comments['fetched'] += $result['fetched'];
+        $comments['imported'] += $result['imported'];
+        if (!$result['fetched']) $comments['hidden'] += (int) $post['commentsCount'];
+    }
+
+    $dms = ['fetched' => 0, 'imported' => 0, 'error' => null];
+    try {
+        $own = own_username();
+        $events = [];
+        foreach (list_recent_messages() as $m) {
+            if ($m['fromId'] === $accountId || ($own !== null && $m['username'] === $own)) continue;
+            $events[] = ['accountId' => $accountId, 'kind' => 'dm', 'externalId' => $m['id'], 'senderId' => $m['fromId'], 'username' => $m['username'],
+                'text' => $m['text'], 'mediaId' => null, 'at' => $m['at']];
+        }
+        $result = ingest_events($events, false, false, true);
+        $dms['fetched'] = count($events);
+        $dms['imported'] = $result['stored'];
+    } catch (MetaApiError $e) {
+        $dms['error'] = $e->getMessage();
+    }
+    return ['comments' => $comments, 'dms' => $dms];
 }

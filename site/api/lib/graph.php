@@ -175,7 +175,47 @@ function list_media_comments(string $mediaId): array
     foreach ($comments as $c) {
         if (empty($c['text'])) continue;
         $out[] = ['id' => (string) $c['id'], 'text' => (string) $c['text'], 'username' => $c['from']['username'] ?? ($c['username'] ?? null),
-            'fromId' => isset($c['from']['id']) ? (string) $c['from']['id'] : null];
+            'fromId' => isset($c['from']['id']) ? (string) $c['from']['id'] : null, 'at' => graph_time($c['timestamp'] ?? null)];
+    }
+    return $out;
+}
+
+/** Graph timestamp ("2026-10-19T09:00:00+0000") → MySQL UTC string, or null. */
+function graph_time(?string $value): ?string
+{
+    if (!$value) return null;
+    try {
+        return (new DateTimeImmutable($value))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    } catch (Exception $e) {
+        return null;
+    }
+}
+
+/** Recent DMs of the connected account (Instagram Login only): up to 10 messages of the 25 latest conversations. */
+function list_recent_messages(): array
+{
+    require_instagram_login();
+    try {
+        $conversations = graph_list('/me/conversations?platform=instagram&limit=25&fields=' . rawurlencode('messages.limit(10){id,created_time,from,message}'), 1);
+    } catch (MetaApiError $e) {
+        // Some accounts reject nested fields; fall back to one request per conversation and message.
+        $conversations = [];
+        foreach (graph_list('/me/conversations?platform=instagram&limit=10', 1) as $c) {
+            $refs = graph_request('GET', '/' . rawurlencode((string) $c['id']) . '?fields=messages');
+            $data = [];
+            foreach (array_slice($refs['messages']['data'] ?? [], 0, 5) as $ref) {
+                $data[] = graph_request('GET', '/' . rawurlencode((string) $ref['id']) . '?fields=id,created_time,from,message');
+            }
+            $conversations[] = ['id' => $c['id'], 'messages' => ['data' => $data]];
+        }
+    }
+    $out = [];
+    foreach ($conversations as $c) {
+        foreach ($c['messages']['data'] ?? [] as $m) {
+            if (empty($m['message']) || empty($m['from']['id'])) continue;
+            $out[] = ['id' => (string) $m['id'], 'text' => (string) $m['message'], 'fromId' => (string) $m['from']['id'],
+                'username' => isset($m['from']['username']) ? (string) $m['from']['username'] : null, 'at' => graph_time($m['created_time'] ?? null)];
+        }
     }
     return $out;
 }
