@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
-import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, splitMessages, type DmButton } from "@shared/inbox";
+import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, optionsAsText, splitMessages, type DmButton } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
@@ -494,7 +494,16 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const reject = trpc.approvals.reject.useMutation({ onSuccess: refresh, onError: (error, input) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) })) });
   const approveMany = trpc.approvals.approveMany.useMutation();
   const rejectMany = trpc.approvals.rejectMany.useMutation();
-  const busy = (id: number) => Boolean(bulkBusy) || (approve.isPending && approve.variables?.id === id) || (reject.isPending && reject.variables?.id === id);
+  const onItemError = (error: unknown, input: { id: number }) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) }));
+  const forgetDraft = (id: number) => setDrafts(({ [id]: _, ...rest }) => rest);
+  const markSent = trpc.approvals.markSent.useMutation({ onSuccess: refresh, onError: onItemError });
+  const moveToPublic = trpc.approvals.moveToPublic.useMutation({ onSuccess: (_, input) => { forgetDraft(input.id); refresh(); }, onError: onItemError });
+  const moveToPublicMany = trpc.approvals.moveToPublicMany.useMutation();
+  /** Items whose text was copied for sending by hand; they now offer «ارسال دستی شد». */
+  const [copied, setCopied] = useState<Record<number, string>>({});
+  const busy = (id: number) =>
+    Boolean(bulkBusy) ||
+    [approve, reject, markSent, moveToPublic].some((m) => m.isPending && m.variables?.id === id);
 
   const rules = useMemo(() => Array.from(new Set(items.map((i) => i.reason))), [items]);
   const filtered = useMemo(() => {
@@ -569,6 +578,38 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
       refresh();
     }
   };
+  /** Past the API's deadline a person can still send it from the Instagram app. */
+  const copyAndOpen = async (item: ApprovalItem) => {
+    const draft = drafts[item.id] ?? item.draft;
+    const text = item.buttons.length ? optionsAsText(draft, item.buttons.map((title) => ({ title, payload: "" }))) : draft;
+    const hasUsername = !/^\d+$/.test(item.handle);
+    // Open the tab first: browsers block popups that come after an await.
+    if (hasUsername) window.open(`https://ig.me/m/${encodeURIComponent(item.handle)}`, "_blank", "noopener");
+    let note = hasUsername ? "متن کپی شد؛ در اینستاگرام بچسبانید و بفرستید، بعد «ارسال دستی شد» را بزنید." : "متن کپی شد؛ نام کاربری معلوم نیست، دایرکت را خودتان در اینستاگرام پیدا کنید.";
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      note = "کپی خودکار نشد؛ متن را از کادر بالا کپی کنید.";
+    }
+    setCopied((current) => ({ ...current, [item.id]: note }));
+  };
+  const moveAll = async (list: ApprovalItem[]) => {
+    if (!list.length || !window.confirm(`${faNum(list.length)} دایرکتِ مهلت‌گذشته به پاسخ زیر همان کامنت تبدیل شود؟ متن پیش‌فرض از مشتری می‌خواهد دایرکت بدهد؛ بعد از تبدیل، متن را ببینید و تأیید کنید.`)) return;
+    setBulkNotice(null);
+    setBulkBusy("در حال تبدیل…");
+    try {
+      let moved = 0;
+      for (let i = 0; i < list.length; i += 1000) moved += (await moveToPublicMany.mutateAsync({ ids: list.slice(i, i + 1000).map((item) => item.id) })).moved;
+      list.forEach((item) => forgetDraft(item.id));
+      setBulkNotice({ ok: true, text: `${faNum(moved)} مورد به پاسخ زیر کامنت تبدیل شد و در صف منتظر تأیید است.` });
+    } catch (error) {
+      setBulkNotice({ ok: false, text: errorMessage(error) });
+    } finally {
+      setSelected(new Set());
+      setBulkBusy("");
+      refresh();
+    }
+  };
   const toggle = (id: number) => setSelected((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id);
@@ -576,6 +617,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     return next;
   });
   const selectedItems = filtered.filter((item) => selected.has(item.id));
+  const movable = selectedItems.filter((item) => item.replyChannel === "private" && isExpired(item));
   const filtering = filtered.length !== items.length;
 
   return (
@@ -619,6 +661,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
           <label className="bulk-check"><input type="checkbox" checked={filtered.length > 0 && selectedItems.length === filtered.length} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((i) => i.id)) : new Set())} /> انتخاب همه{filtering ? " (فیلترشده)" : ""}</label>
           <button className="approve-button" disabled={!selectedItems.length || Boolean(bulkBusy)} onClick={() => sendAll(selectedItems, "انتخاب‌شده")}><CheckCheck size={14} /> تأیید انتخاب‌شده‌ها{selectedItems.length ? ` (${faNum(selectedItems.length)})` : ""}</button>
           <button className="reject-button wide" disabled={!selectedItems.length || Boolean(bulkBusy)} onClick={() => rejectAll(selectedItems, "انتخاب‌شده")}><X size={13} /> رد انتخاب‌شده‌ها</button>
+          {movable.length > 0 && <button className="secondary-button compact-button" disabled={Boolean(bulkBusy)} onClick={() => moveAll(movable)}><MessageSquareText size={13} /> تبدیل {faNum(movable.length)} دایرکتِ مهلت‌گذشته به پاسخ زیر کامنت</button>}
           <button className="secondary-button compact-button" disabled={!filtered.length || Boolean(bulkBusy)} onClick={() => sendAll(filtered, filtering ? "فیلترشده" : "در صف")}>تأیید همه{filtering ? "ٔ فیلترشده‌ها" : ""} ({faNum(filtered.length)})</button>
         </div>
       )}
@@ -659,6 +702,14 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
                         ? "دایرکت به نویسندهٔ کامنت فقط تا ۷ روز بعد از کامنت ممکن است؛ این مورد را رد کنید و در صورت نیاز زیر کامنت جواب دهید."
                         : "به دایرکت فقط تا ۲۴ ساعت بعد از آخرین پیام مشتری می‌شود جواب داد؛ اگر دوباره پیام بدهد، دوباره قابل ارسال می‌شود."}
                     </span>
+                  )}
+                  {isExpired(item) && (
+                    <div className="expired-actions">
+                      <button className="secondary-button compact-button" disabled={busy(item.id)} onClick={() => copyAndOpen(item)}><Send size={13} /> کپی متن و باز کردن دایرکت در اینستاگرام</button>
+                      {copied[item.id] !== undefined && <button className="approve-button" disabled={busy(item.id)} onClick={() => markSent.mutate({ id: item.id, text: drafts[item.id] })}><Check size={13} /> ارسال دستی شد</button>}
+                      {item.replyChannel === "private" && <button className="secondary-button compact-button" disabled={busy(item.id)} onClick={() => moveToPublic.mutate({ id: item.id })}><MessageSquareText size={13} /> به‌جایش زیر کامنت جواب بده</button>}
+                      {copied[item.id] && <span className="field-tip">{copied[item.id]}</span>}
+                    </div>
                   )}
                   {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
                 </div>

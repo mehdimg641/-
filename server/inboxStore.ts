@@ -22,7 +22,7 @@ import { DEFAULT_RULES, DEFAULT_TEMPLATES } from "./replyRules";
 export type RuleInput = Omit<InsertReplyRule, "id" | "createdAt" | "updatedAt">;
 export type TemplateInput = Omit<InsertReplyTemplate, "id" | "createdAt" | "updatedAt">;
 export type MediaInput = Omit<InsertIgMedia, "syncedAt">;
-export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt">>;
+export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt" | "channel" | "source" | "quickReplies">>;
 
 export interface InboxStore {
   readonly persistent: boolean;

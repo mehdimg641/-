@@ -81,6 +81,9 @@ export const DM_WINDOW_CLOSED = "مهلت اینستاگرام گذشته: به 
 /** Instagram's own refusal (code 10 / 2534022) when the window has closed. */
 export const WINDOW_CLOSED = "مهلت ارسال اینستاگرام گذشته (دایرکت: ۲۴ ساعت بعد از آخرین پیام مشتری؛ دایرکت به نویسندهٔ کامنت: ۷ روز بعد از کامنت).";
 
+/** Public reply that replaces a private DM Instagram no longer allows: the customer's DM reopens the window. */
+export const DM_INVITE_TEXT = "سلام {{username}}، لطفاً به دایرکت پیج پیام بدهید تا جواب‌تان را همان‌جا بفرستیم 🌹";
+
 export const channelOf = (kind: InboxKind): InboxChannel => (kind === "dm" ? "DM" : "کامنت");
 
 export type InboxFilter = "all" | "unread" | "priority" | "unanswered";

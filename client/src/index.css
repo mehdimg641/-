@@ -386,3 +386,10 @@ a.profile-link { text-decoration: none; }
 .approval-item.fresh { background: #f3faf4; border-radius: 10px; }
 .reject-button.wide { width: auto; padding: 0 10px; gap: 4px; font-size: 11px; display: inline-flex; align-items: center; }
 .queue-more { align-self: center; margin: 8px auto; display: block; }
+
+.expired-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}

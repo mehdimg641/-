@@ -18,6 +18,8 @@ import {
   inboxStats,
   isAutoReplyEnabled,
   listApprovals,
+  markSentManually,
+  moveToPublicReply,
   rejectReply,
   ReplyStateError,
   sendManualReply,
@@ -157,6 +159,39 @@ const approvalsRouter = router({
         }
       }
       return { rejected };
+    }),
+  /** Sent by hand in the Instagram app (e.g. past the API's deadline). */
+  markSent: adminProcedure
+    .input(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() }))
+    .mutation(async ({ input, ctx }) =>
+      guard(async () => {
+        await markSentManually(await getInboxStore(), input.id, ctx.user.id, input.text);
+        return { success: true } as const;
+      }),
+    ),
+  /** A private DM to a commenter becomes a reply under the comment. */
+  moveToPublic: adminProcedure
+    .input(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() }))
+    .mutation(async ({ input, ctx }) =>
+      guard(async () => {
+        await moveToPublicReply(await getInboxStore(), input.id, ctx.user.id, input.text);
+        return { success: true } as const;
+      }),
+    ),
+  moveToPublicMany: adminProcedure
+    .input(z.object({ ids: z.array(z.number().int()).min(1).max(1000) }))
+    .mutation(async ({ input, ctx }) => {
+      const store = await getInboxStore();
+      let moved = 0;
+      for (const id of input.ids) {
+        try {
+          await moveToPublicReply(store, id, ctx.user.id);
+          moved++;
+        } catch (error) {
+          if (!(error instanceof ReplyStateError)) throw error;
+        }
+      }
+      return { moved };
     }),
   reject: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input, ctx }) =>
     guard(async () => {

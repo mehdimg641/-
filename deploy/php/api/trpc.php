@@ -268,6 +268,29 @@ function procedures(): array
             }
             return ['rejected' => $rejected];
         })],
+        'approvals.markSent' => ['mutation', $admin(function ($in, $user) {
+            mark_sent_manually(req_int($in, 'id'), $user['id'], (array_key_exists('text', $in) && $in['text'] !== null ? req_str($in, 'text', 1, 1000) : null));
+            return ['success' => true];
+        })],
+        'approvals.moveToPublic' => ['mutation', $admin(function ($in, $user) {
+            move_to_public_reply(req_int($in, 'id'), $user['id'], (array_key_exists('text', $in) && $in['text'] !== null ? req_str($in, 'text', 1, 1000) : null));
+            return ['success' => true];
+        })],
+        'approvals.moveToPublicMany' => ['mutation', $admin(function ($in, $user) {
+            $ids = $in['ids'] ?? null;
+            if (!is_array($ids) || !$ids || count($ids) > 1000) throw new ApiError('BAD_REQUEST', 'بین ۱ تا ۱۰۰۰ مورد انتخاب کنید');
+            $moved = 0;
+            foreach ($ids as $id) {
+                if (!is_int($id)) throw new ApiError('BAD_REQUEST', 'شناسه نامعتبر است');
+                try {
+                    move_to_public_reply($id, $user['id']);
+                    $moved++;
+                } catch (ApiError $e) {
+                    if ($e->trpcCode !== 'CONFLICT') throw $e;
+                }
+            }
+            return ['moved' => $moved];
+        })],
         'approvals.reject' => ['mutation', $admin(function ($in, $user) {
             reject_reply(req_int($in, 'id'), $user['id']);
             return ['success' => true];

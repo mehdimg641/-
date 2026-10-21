@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRulesToUnanswered, buildThreads, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, redraftPending, rejectReply, sendManualReply, sendReply } from "./inboxService";
+import { applyRulesToUnanswered, buildThreads, markSentManually, moveToPublicReply, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, redraftPending, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
 import { DM_WINDOW_CLOSED, PRIVATE_WINDOW_CLOSED, WINDOW_CLOSED } from "@shared/inbox";
 import type { IncomingEvent } from "./metaWebhook";
@@ -337,6 +337,31 @@ describe("redraftPending", () => {
     await ingestEvents(store, [dm("m2", "سلام")], { draft: false });
     expect((await listApprovals(store)).find((i) => i.id === dmDraft.id)?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
     expect((await sendReply(store, dmDraft.id, 1)).ok).toBe(true);
+  });
+
+  it("answers expired items by hand or under the comment instead", async () => {
+    const store = await emptyStore();
+    const rule = await store.createRule({ ...base, channels: ["comment", "dm"], template: "پاسخ", dmTemplate: "دایرکت" });
+    const old = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    await ingestEvents(store, [{ ...comment("c1", "لیست؟"), at: old }, { ...dm("m1", "لیست؟"), at: old }], { draft: false });
+    const [c1, m1] = await Promise.all(["c1", "m1"].map(async (id) => (await store.listEvents(10)).find((e) => e.externalId === id)!));
+    const privateDraft = await store.createReply({ eventId: c1.id, ruleId: rule.id, source: "rule", channel: "private", text: "دایرکت", status: "pending" });
+    const dmDraft = await store.createReply({ eventId: m1.id, ruleId: rule.id, source: "rule", channel: "reply", text: "پاسخ", status: "pending" });
+
+    await expect(moveToPublicReply(store, dmDraft.id, 1)).rejects.toThrow("فقط دایرکت");
+    await moveToPublicReply(store, privateDraft.id, 1);
+    const moved = (await listApprovals(store)).find((i) => i.id === privateDraft.id)!;
+    expect(moved).toMatchObject({ replyChannel: "reply", expiresAt: null, reason: "پاسخ دستی", draft: "سلام hossein.rz، لطفاً به دایرکت پیج پیام بدهید تا جواب‌تان را همان‌جا بفرستیم 🌹" });
+    // A rule change does not overwrite the operator's choice.
+    await store.updateRule(rule.id, { template: "پاسخ جدید" });
+    await redraftPending(store);
+    expect((await store.getReply(privateDraft.id))?.text).toBe(moved.draft);
+
+    await markSentManually(store, dmDraft.id, 1, "سلام، لیست را فرستادیم");
+    expect(await store.getReply(dmDraft.id)).toMatchObject({ status: "sent", text: "سلام، لیست را فرستادیم", decidedBy: 1 });
+    expect((await listApprovals(store)).map((i) => i.id)).toEqual([privateDraft.id]);
+    await expect(markSentManually(store, dmDraft.id, 1)).rejects.toThrow("قبلاً");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("explains Instagram's own window refusal in Persian", async () => {

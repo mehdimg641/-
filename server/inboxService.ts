@@ -1,5 +1,6 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
 import {
+  DM_INVITE_TEXT,
   DM_WINDOW_CLOSED,
   PRIVATE_WINDOW_CLOSED,
   buttonPayload,
@@ -287,6 +288,31 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
 export async function rejectReply(store: InboxStore, replyId: number, operatorId: number) {
   if (!(await store.claimReply(replyId, ["pending", "failed"]))) throw new ReplyStateError("این پاسخ قبلاً ارسال یا رد شده است");
   await store.updateReply(replyId, { status: "rejected", decidedBy: operatorId });
+}
+
+/** The operator sent this one by hand in the Instagram app; record it as sent without calling Meta. */
+export async function markSentManually(store: InboxStore, replyId: number, operatorId: number, editedText?: string) {
+  const reply = await store.getReply(replyId);
+  if (!reply) throw new ReplyStateError("پاسخ پیدا نشد");
+  const text = (editedText ?? reply.text).trim();
+  if (!text) throw new ReplyStateError("متن پاسخ خالی است");
+  if (!(await store.claimReply(replyId, ["pending", "failed"]))) throw new ReplyStateError("این پاسخ قبلاً ارسال یا رد شده است");
+  await store.updateReply(replyId, { text, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date() });
+}
+
+/**
+ * Turns a private DM to a commenter into a reply under the comment (which has no deadline), by
+ * default asking them to DM the page. It becomes the operator's own draft, so rule changes leave it.
+ */
+export async function moveToPublicReply(store: InboxStore, replyId: number, operatorId: number, editedText?: string) {
+  const reply = await store.getReply(replyId);
+  if (!reply) throw new ReplyStateError("پاسخ پیدا نشد");
+  const event = await store.getEvent(reply.eventId);
+  if (!event || event.kind !== "comment" || reply.channel !== "private") throw new ReplyStateError("فقط دایرکت به نویسندهٔ کامنت را می‌شود زیر کامنت فرستاد");
+  const text = (editedText ?? renderTemplate(DM_INVITE_TEXT, event.username ?? "")).trim();
+  if (!text) throw new ReplyStateError("متن پاسخ خالی است");
+  if (!(await store.claimReply(replyId, ["pending", "failed"]))) throw new ReplyStateError("این پاسخ قبلاً ارسال یا رد شده است");
+  await store.updateReply(replyId, { channel: "reply", source: "manual", quickReplies: null, text, status: "pending", error: null, decidedBy: operatorId });
 }
 
 export async function sendManualReply(store: InboxStore, eventId: number, text: string, operatorId: number) {
