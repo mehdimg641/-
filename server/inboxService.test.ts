@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyRulesToUnanswered, buildThreads, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, redraftPending, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
+import { DM_WINDOW_CLOSED, PRIVATE_WINDOW_CLOSED, WINDOW_CLOSED } from "@shared/inbox";
 import type { IncomingEvent } from "./metaWebhook";
 
 const comment = (id: string, text: string): IncomingEvent => ({
@@ -305,17 +306,48 @@ describe("redraftPending", () => {
     const old = new Date(Date.now() - 30 * 24 * 3600 * 1000);
     await ingestEvents(store, [{ ...comment("c1", "لیست؟"), at: old }, { ...comment("c2", "لیست!"), senderId: "888", at: old }], { draft: false });
     await applyRulesToUnanswered(store);
-    // c2's public reply already went out; only its DM is still waiting.
+    // Past 7 days Instagram refuses the private reply, so only the public replies are drafted.
+    expect((await store.listReplies({ status: "pending" })).map((r) => r.channel)).toEqual(["reply", "reply"]);
+    // c2's public reply already went out.
     const c2 = (await store.listEvents(10)).find((e) => e.externalId === "c2")!;
     const c2Reply = (await store.listReplies({ eventIds: [c2.id] })).find((r) => r.channel === "reply")!;
     await sendReply(store, c2Reply.id, 1);
 
     await store.updateRule(rule.id, { template: "پاسخ جدید", dmTemplate: "دایرکت جدید" });
-    expect((await redraftPending(store)).updated).toBe(2);
-    const pending = await store.listReplies({ status: "pending" });
-    expect(pending.filter((r) => r.eventId !== c2.id).map((r) => r.text).sort()).toEqual(["دایرکت جدید", "پاسخ جدید"]);
-    expect(pending.filter((r) => r.eventId === c2.id).map((r) => [r.channel, r.text])).toEqual([["private", "دایرکت جدید"]]);
+    expect((await redraftPending(store)).updated).toBe(1);
+    expect((await store.listReplies({ status: "pending" })).map((r) => [r.channel, r.text])).toEqual([["reply", "پاسخ جدید"]]);
     expect((await store.getReply(c2Reply.id))?.text).toBe("پاسخ قدیم");
+  });
+
+  it("does not send past Instagram's deadline, and says why", async () => {
+    const store = await emptyStore();
+    await store.createRule({ ...base, template: "پاسخ", dmTemplate: "دایرکت" });
+    const eightDays = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    await ingestEvents(store, [{ ...comment("c1", "لیست؟"), at: eightDays }, { ...dm("m1", "لیست؟"), at: new Date(Date.now() - 25 * 3600 * 1000) }], { draft: false });
+    const [c1, m1] = ["c1", "m1"].map((id) => store.listEvents(10).then((all) => all.find((e) => e.externalId === id)!));
+    // A private draft made before the deadline existed, and a DM draft of yesterday.
+    const privateDraft = await store.createReply({ eventId: (await c1).id, ruleId: null, source: "rule", channel: "private", text: "دایرکت", status: "pending" });
+    const dmDraft = await store.createReply({ eventId: (await m1).id, ruleId: null, source: "rule", channel: "reply", text: "پاسخ", status: "pending" });
+    const items = await listApprovals(store);
+    expect(items.every((i) => i.expiresAt !== null && i.expiresAt < new Date())).toBe(true);
+    expect(await sendReply(store, privateDraft.id, 1)).toEqual({ ok: false, error: PRIVATE_WINDOW_CLOSED });
+    expect(await sendReply(store, dmDraft.id, 1)).toEqual({ ok: false, error: DM_WINDOW_CLOSED });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The customer writes again: the DM window opens and the old draft can go out.
+    await ingestEvents(store, [dm("m2", "سلام")], { draft: false });
+    expect((await listApprovals(store)).find((i) => i.id === dmDraft.id)?.expiresAt?.getTime()).toBeGreaterThan(Date.now());
+    expect((await sendReply(store, dmDraft.id, 1)).ok).toBe(true);
+  });
+
+  it("explains Instagram's own window refusal in Persian", async () => {
+    const store = await emptyStore();
+    await store.createRule({ ...base, channels: ["dm"], template: "پاسخ" });
+    await ingestEvents(store, [dm("m1", "لیست؟")]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: "(#10) This message is sent outside of allowed window.", code: 10, error_subcode: 2534022 } }), { status: 500 }),
+    );
+    const [item] = await listApprovals(store);
+    expect(await sendReply(store, item.id, 1)).toEqual({ ok: false, error: WINDOW_CLOSED });
   });
 
   it("drafts recent messages a new rule now matches, but not old ones", async () => {

@@ -453,6 +453,15 @@ type QueueSort = "newest" | "oldest";
 type QueueKind = "all" | "comment" | "private" | "dm";
 const PAGE = 30;
 const isNew = (item: ApprovalItem) => Date.now() - new Date(item.receivedAt).getTime() < 3_600_000;
+/** Past Instagram's deadline (7 days for a DM to a commenter, 24 hours for a DM reply). */
+const isExpired = (item: ApprovalItem) => item.expiresAt !== null && new Date(item.expiresAt).getTime() <= Date.now();
+/** "۵ ساعت" left when the deadline is under a day away, otherwise "". */
+function timeLeft(item: ApprovalItem) {
+  if (!item.expiresAt) return "";
+  const ms = new Date(item.expiresAt).getTime() - Date.now();
+  if (ms <= 0 || ms > 24 * 3_600_000) return "";
+  return ms < 3_600_000 ? `${faNum(Math.max(1, Math.round(ms / 60_000)))} دقیقه` : `${faNum(Math.round(ms / 3_600_000))} ساعت`;
+}
 
 function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const utils = trpc.useUtils();
@@ -464,7 +473,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const [search, setSearch] = useState("");
   const [rule, setRule] = useState("all");
   const [kind, setKind] = useState<QueueKind>("all");
-  const [status, setStatus] = useState<"all" | "pending" | "failed">("all");
+  const [status, setStatus] = useState<"all" | "pending" | "failed" | "open" | "expired">("all");
   const [sort, setSort] = useState<QueueSort>("newest");
   const [todayOnly, setTodayOnly] = useState(false);
   const [answer, setAnswer] = useState<"all" | "unanswered" | "answered">("all");
@@ -495,7 +504,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     const list = items.filter(
       (i) =>
         (rule === "all" || i.reason === rule) &&
-        (status === "all" || i.status === status) &&
+        (status === "all" || (status === "expired" ? isExpired(i) : status === "open" ? !isExpired(i) : i.status === status)) &&
         (answer === "all" || (answer === "unanswered" ? !i.answered : i.answered)) &&
         (kind === "all" || (kind === "private" ? i.replyChannel === "private" : kind === "dm" ? i.channel === "DM" : i.channel !== "DM" && i.replyChannel === "reply")) &&
         (!todayOnly || new Date(i.receivedAt) >= startOfDay) &&
@@ -514,8 +523,16 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   }, [visible, grouped]);
 
   // Several batches of at most 100: the server sends each reply to Instagram one by one.
-  const sendAll = async (list: ApprovalItem[], label: string) => {
-    if (!list.length || !window.confirm(`${faNum(list.length)} پاسخ ${label} با همین متن‌ها ارسال شود؟`)) return;
+  const sendAll = async (chosen: ApprovalItem[], label: string) => {
+    // Instagram refuses these anyway; leave them for the operator to reject.
+    const expired = chosen.filter(isExpired).length;
+    const list = chosen.filter((item) => !isExpired(item));
+    const skipped = expired ? `${faNum(expired)} مورد که مهلت اینستاگرامشان گذشته فرستاده نمی‌شود (وضعیت «مهلت اینستاگرام گذشته» را در فیلترها ببینید).` : "";
+    if (!list.length) {
+      setBulkNotice({ ok: false, text: skipped || "موردی برای ارسال نیست." });
+      return;
+    }
+    if (!window.confirm(`${faNum(list.length)} پاسخ ${label} با همین متن‌ها ارسال شود؟${skipped ? `\n${skipped}` : ""}`)) return;
     setBulkNotice(null);
     let sent = 0;
     const failed: Array<{ id: number; error: string }> = [];
@@ -526,7 +543,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
         sent += result.sent;
         failed.push(...result.failed);
       }
-      setBulkNotice({ ok: failed.length === 0, text: `${faNum(sent)} پاسخ ارسال شد${failed.length ? `؛ ${faNum(failed.length)} مورد ناموفق بود (خطا زیر هر مورد)` : ""}.` });
+      setBulkNotice({ ok: failed.length === 0, text: `${faNum(sent)} پاسخ ارسال شد${failed.length ? `؛ ${faNum(failed.length)} مورد ناموفق بود (خطا زیر هر مورد)` : ""}.${skipped ? ` ${skipped}` : ""}` });
     } catch (error) {
       setBulkNotice({ ok: false, text: errorMessage(error) });
     } finally {
@@ -585,6 +602,8 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
             <option value="all">همهٔ وضعیت‌ها</option>
             <option value="pending">در انتظار تأیید</option>
             <option value="failed">ارسال ناموفق</option>
+            <option value="open">قابل ارسال (در مهلت)</option>
+            <option value="expired">مهلت اینستاگرام گذشته</option>
           </select>
           <select value={answer} onChange={(e) => { setAnswer(e.target.value as typeof answer); setShown(PAGE); }}>
             <option value="all">جواب‌داده‌شده و نشده</option>
@@ -629,10 +648,22 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
                   {item.buttons.length > 0 && <div className="quick-replies">{item.buttons.map((b) => <span key={b} className="quick-reply">{b}</span>)}</div>}
                   <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
                   {item.answered && <StatusPill tone="green">جواب گرفته</StatusPill>}
+                  {isExpired(item) ? (
+                    <StatusPill tone="orange">مهلت اینستاگرام گذشته</StatusPill>
+                  ) : timeLeft(item) ? (
+                    <StatusPill tone="gold">{timeLeft(item)} تا پایان مهلت</StatusPill>
+                  ) : null}
+                  {isExpired(item) && (
+                    <span className="field-tip">
+                      {item.replyChannel === "private"
+                        ? "دایرکت به نویسندهٔ کامنت فقط تا ۷ روز بعد از کامنت ممکن است؛ این مورد را رد کنید و در صورت نیاز زیر کامنت جواب دهید."
+                        : "به دایرکت فقط تا ۲۴ ساعت بعد از آخرین پیام مشتری می‌شود جواب داد؛ اگر دوباره پیام بدهد، دوباره قابل ارسال می‌شود."}
+                    </span>
+                  )}
                   {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
                 </div>
                 <div className="approval-actions">
-                  <button className="approve-button" disabled={busy(item.id)} onClick={() => approve.mutate({ id: item.id, text: drafts[item.id] })}><Check size={14} /> {item.status === "failed" ? "تلاش مجدد" : "تأیید و ارسال"}</button>
+                  <button className="approve-button" disabled={busy(item.id) || isExpired(item)} title={isExpired(item) ? "مهلت اینستاگرام گذشته" : undefined} onClick={() => approve.mutate({ id: item.id, text: drafts[item.id] })}><Check size={14} /> {item.status === "failed" ? "تلاش مجدد" : "تأیید و ارسال"}</button>
                   <button className="reject-button" aria-label="رد" title="رد" disabled={busy(item.id)} onClick={() => reject.mutate({ id: item.id })}><X size={14} /></button>
                 </div>
               </div>

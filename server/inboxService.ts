@@ -1,10 +1,13 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
 import {
+  DM_WINDOW_CLOSED,
+  PRIVATE_WINDOW_CLOSED,
   buttonPayload,
   channelOf,
   joinMessages,
   optionsAsText,
   parseButtonPayload,
+  replyDeadline,
   splitMessages,
   type ApprovalItem,
   type InboxThread,
@@ -52,9 +55,37 @@ function draftParts(event: Pick<IgEvent, "id" | "kind">, decision: Decision): Dr
   return parts;
 }
 
+/** Channels Instagram no longer accepts for this message (drafting them would only fail). */
+function closedChannels(event: Pick<IgEvent, "kind" | "createdAt">, now = new Date()) {
+  return new Set(
+    (["reply", "private"] as const).filter((channel) => {
+      const deadline = replyDeadline(event.kind, channel, event.createdAt);
+      return deadline !== null && deadline <= now;
+    }),
+  );
+}
+
+/** Each sender's latest DM: a DM stays answerable for 24 hours after it. */
+async function latestDms(store: InboxStore) {
+  const latest = new Map<string, Date>();
+  for (const event of await store.listEvents(THREAD_EVENT_LIMIT)) {
+    if (event.kind !== "dm") continue;
+    const seen = latest.get(event.senderId);
+    if (!seen || event.createdAt > seen) latest.set(event.senderId, event.createdAt);
+  }
+  return latest;
+}
+
+function deadlineOf(event: IgEvent, channel: Reply["channel"], dms: Map<string, Date>) {
+  const dm = dms.get(event.senderId);
+  const receivedAt = event.kind === "dm" && dm && dm > event.createdAt ? dm : event.createdAt;
+  return replyDeadline(event.kind, channel, receivedAt);
+}
+
 async function createDrafts(store: InboxStore, event: IgEvent, decision: Decision) {
   const ids: number[] = [];
-  for (const part of draftParts(event, decision)) {
+  const closed = closedChannels(event);
+  for (const part of draftParts(event, decision).filter((p) => !closed.has(p.channel))) {
     ids.push(
       (await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: part.channel, text: part.text, quickReplies: part.quickReplies, status: "pending" })).id,
     );
@@ -165,10 +196,13 @@ export async function redraftPending(store: InboxStore, now = new Date()) {
     const own = replies.filter((r) => r.eventId === event.id).sort((a, b) => a.id - b.id);
     if (own.some((r) => r.status === "sending")) continue;
     const sent = new Set(own.filter((r) => r.status !== "pending" || r.source !== "rule").map((r) => r.channel));
-    const drafts = own.filter((r) => r.status === "pending" && r.source === "rule" && !sent.has(r.channel));
+    // A channel past Instagram's deadline is left as it is: its drafts can only be rejected.
+    const closed = closedChannels(event, now);
+    const open = (channel: Reply["channel"]) => !sent.has(channel) && !closed.has(channel);
+    const drafts = own.filter((r) => r.status === "pending" && r.source === "rule" && open(r.channel));
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
     const ruleId = decision?.rule.id ?? null;
-    const wanted = decision ? draftParts(event, decision).filter((p) => !sent.has(p.channel)) : [];
+    const wanted = decision ? draftParts(event, decision).filter((p) => open(p.channel)) : [];
     const same =
       drafts.length === wanted.length &&
       drafts.every(
@@ -222,6 +256,9 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
   const text = (editedText ?? reply.text).trim();
   try {
     if (!text) throw new Error("متن پاسخ خالی است");
+    // Past Instagram's deadline the API only answers with an error; say why without calling it.
+    const deadline = deadlineOf(event, reply.channel, event.kind === "dm" ? await latestDms(store) : new Map());
+    if (deadline && deadline <= new Date()) throw new Error(reply.channel === "private" ? PRIVATE_WINDOW_CLOSED : DM_WINDOW_CLOSED);
     const buttons = reply.quickReplies?.length ? reply.quickReplies : null;
     const send = (body: string, quickReplies: QuickReply[] | null) =>
       reply.channel === "private"
@@ -343,6 +380,7 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
   const open = [...pending, ...failed];
   const sent = await store.listReplies({ status: "sent", eventIds: Array.from(new Set(open.map((r) => r.eventId))) });
   const answered = new Set(sent.map((r) => r.eventId));
+  const dms = await latestDms(store);
   const items: ApprovalItem[] = [];
   for (const reply of open) {
     const event = await store.getEvent(reply.eventId);
@@ -361,6 +399,7 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
       buttons: reply.quickReplies?.map((q) => q.title) ?? [],
       receivedAt: event.createdAt,
       answered: answered.has(reply.eventId),
+      expiresAt: deadlineOf(event, reply.channel, dms),
       mediaId: event.mediaId,
       tone,
       status: reply.status,

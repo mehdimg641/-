@@ -4,7 +4,7 @@
  * - Facebook Login page tokens ("EAA…") use graph.facebook.com.
  * META_API_HOST=instagram|facebook overrides the guess.
  */
-import type { QuickReply } from "@shared/inbox";
+import { WINDOW_CLOSED, type QuickReply } from "@shared/inbox";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
 
 export type MetaApiHost = "instagram" | "facebook";
@@ -43,9 +43,15 @@ async function graphRequest(method: "GET" | "POST", path: string, body?: Record<
   const text = await response.text();
   if (!response.ok) {
     let message = text.slice(0, 300);
+    let code: number | undefined;
+    let subcode: number | undefined;
     try {
-      message = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? message;
+      const error = (JSON.parse(text) as { error?: { message?: string; code?: number; error_subcode?: number } }).error;
+      message = error?.message ?? message;
+      code = error?.code;
+      subcode = error?.error_subcode;
     } catch {}
+    if (subcode === 2534022 || (code === 10 && /allowed window/i.test(message))) throw new MetaApiError(WINDOW_CLOSED);
     throw new MetaApiError(`Meta API ${response.status}: ${message}`);
   }
   return text ? parseGraphJson(text) : {};

@@ -141,11 +141,49 @@ function draft_parts(string $kind, array $decision, int $eventId): array
     return $parts;
 }
 
+/** Instagram accepts the one private reply to a comment for 7 days, and a DM reply for 24 hours. */
+const PRIVATE_REPLY_WINDOW_SECONDS = 7 * 86400;
+const DM_WINDOW_SECONDS = 86400;
+const PRIVATE_WINDOW_CLOSED = 'مهلت اینستاگرام گذشته: دایرکت به نویسندهٔ کامنت فقط تا ۷ روز بعد از کامنت ممکن است. پاسخ زیر کامنت هنوز ممکن است.';
+const DM_WINDOW_CLOSED = 'مهلت اینستاگرام گذشته: به دایرکت فقط تا ۲۴ ساعت بعد از آخرین پیام مشتری می‌شود جواب داد. اگر دوباره پیام بدهد، مهلت دوباره باز می‌شود.';
+
+/**
+ * When Instagram stops accepting a reply: $receivedAt is the comment's time for a private reply
+ * and the customer's latest DM for a DM. Replies under a comment have no deadline.
+ */
+function reply_deadline(string $kind, string $channel, DateTimeImmutable $receivedAt): ?DateTimeImmutable
+{
+    if ($kind === 'comment' && $channel === 'reply') return null;
+    return $receivedAt->modify('+' . ($kind === 'comment' ? PRIVATE_REPLY_WINDOW_SECONDS : DM_WINDOW_SECONDS) . ' seconds');
+}
+
+/** Channels Instagram no longer accepts for this message (drafting them would only fail). */
+function closed_channels(string $kind, DateTimeImmutable $createdAt): array
+{
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    $closed = [];
+    foreach (['reply', 'private'] as $channel) {
+        $deadline = reply_deadline($kind, $channel, $createdAt);
+        if ($deadline && $deadline <= $now) $closed[$channel] = true;
+    }
+    return $closed;
+}
+
+/** The sender's latest DM time (a DM stays answerable for 24 hours after it), or $fallback. */
+function latest_dm_at(string $senderId, DateTimeImmutable $fallback): DateTimeImmutable
+{
+    $stmt = db()->prepare("SELECT MAX(createdAt) FROM igEvents WHERE kind = 'dm' AND senderId = ?");
+    $stmt->execute([$senderId]);
+    $latest = db_time($stmt->fetchColumn() ?: null);
+    return $latest && $latest > $fallback ? $latest : $fallback;
+}
+
 /** The drafts a rule decision calls for: a reply in place and, for comments, a private DM. */
-function create_drafts(int $eventId, string $kind, array $decision): array
+function create_drafts(int $eventId, string $kind, array $decision, DateTimeImmutable $createdAt): array
 {
     $ids = [];
-    foreach (draft_parts($kind, $decision, $eventId) as $part) $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $part['text'], null, $part['channel'], $part['quickReplies']);
+    $closed = closed_channels($kind, $createdAt);
+    foreach (draft_parts($kind, $decision, $eventId) as $part) if (!isset($closed[$part['channel']])) $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $part['text'], null, $part['channel'], $part['quickReplies']);
     return $ids;
 }
 
@@ -191,7 +229,8 @@ function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = 
             continue;
         }
         if (!$decision || !$draft) continue;
-        $ids = create_drafts((int) $pdo->lastInsertId(), $e['kind'], $decision);
+        $at = !empty($e['at']) ? db_time($e['at']) : new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $ids = create_drafts((int) $pdo->lastInsertId(), $e['kind'], $decision, $at);
         if ($autoSend && $decision['rule']['action'] === 'send') $result['toSend'] = array_merge($result['toSend'], $ids);
     }
     return $result;
@@ -226,10 +265,12 @@ function redraft_pending(): array
             if ($reply['status'] === 'sending') continue 2;
             if ($reply['status'] !== 'pending' || $reply['source'] !== 'rule') $sent[$reply['channel']] = true;
         }
-        $drafts = array_values(array_filter($own, function ($r) use ($sent) { return $r['status'] === 'pending' && $r['source'] === 'rule' && !isset($sent[$r['channel']]); }));
+        // A channel past Instagram's deadline is left as it is: its drafts can only be rejected.
+        $skip = $sent + closed_channels($event['kind'], $event['createdAt']);
+        $drafts = array_values(array_filter($own, function ($r) use ($skip) { return $r['status'] === 'pending' && $r['source'] === 'rule' && !isset($skip[$r['channel']]); }));
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         $ruleId = $decision ? $decision['rule']['id'] : null;
-        $wanted = $decision ? array_values(array_filter(draft_parts($event['kind'], $decision, $event['id']), function ($p) use ($sent) { return !isset($sent[$p['channel']]); })) : [];
+        $wanted = $decision ? array_values(array_filter(draft_parts($event['kind'], $decision, $event['id']), function ($p) use ($skip) { return !isset($skip[$p['channel']]); })) : [];
         $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text'], 'quickReplies' => $r['quickReplies']]; }, $drafts);
         $sameRule = !array_filter($drafts, function ($r) use ($ruleId) { return $r['ruleId'] !== $ruleId; });
         if ($sameRule && $current === $wanted && ($sent || $event['ruleId'] === $ruleId)) continue;
@@ -256,7 +297,7 @@ function apply_rules_to_unanswered(): array
     $drafted = 0;
     foreach (array_map('event_row', $rows) as $event) {
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
-        if ($decision && create_drafts($event['id'], $event['kind'], $decision)) $drafted++;
+        if ($decision && create_drafts($event['id'], $event['kind'], $decision, $event['createdAt'])) $drafted++;
     }
     return ['drafted' => $drafted, 'updated' => $updated];
 }
@@ -278,6 +319,12 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     };
     try {
         if ($text === '') throw new MetaApiError('متن پاسخ خالی است');
+        // Past Instagram's deadline the API only answers with an error; say why without calling it.
+        $received = $event['kind'] === 'dm' ? latest_dm_at($event['senderId'], $event['createdAt']) : $event['createdAt'];
+        $deadline = reply_deadline($event['kind'], $reply['channel'], $received);
+        if ($deadline && $deadline <= new DateTimeImmutable('now', new DateTimeZone('UTC'))) {
+            throw new MetaApiError($reply['channel'] === 'private' ? PRIVATE_WINDOW_CLOSED : DM_WINDOW_CLOSED);
+        }
         try {
             $send($text, $buttons);
         } catch (MetaApiError $e) {
@@ -418,7 +465,8 @@ function list_approvals(): array
 {
     $style = rule_style(list_rules());
     $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt,
-        EXISTS(SELECT 1 FROM replies s WHERE s.eventId = r.eventId AND s.status = 'sent') AS answered
+        EXISTS(SELECT 1 FROM replies s WHERE s.eventId = r.eventId AND s.status = 'sent') AS answered,
+        (SELECT MAX(d.createdAt) FROM igEvents d WHERE d.kind = 'dm' AND d.senderId = e.senderId) AS lastDmAt
         FROM replies r JOIN igEvents e ON e.id = r.eventId
         WHERE r.status IN ('pending', 'failed') ORDER BY r.createdAt, r.id")->fetchAll();
     $items = [];
@@ -438,6 +486,7 @@ function list_approvals(): array
             'buttons' => array_column($reply['quickReplies'] ?? [], 'title'),
             'receivedAt' => db_time($row['receivedAt']),
             'answered' => (bool) $row['answered'],
+            'expiresAt' => reply_deadline($row['kind'], $reply['channel'], $row['kind'] === 'dm' && $row['lastDmAt'] && db_time($row['lastDmAt']) > db_time($row['receivedAt']) ? db_time($row['lastDmAt']) : db_time($row['receivedAt'])),
             'mediaId' => $row['mediaId'],
             'tone' => $s['tone'],
             'status' => $reply['status'],

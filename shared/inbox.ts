@@ -52,12 +52,34 @@ export type ApprovalItem = {
   receivedAt: Date;
   /** The comment or DM already has a sent reply on some channel. */
   answered: boolean;
+  /** When Instagram stops accepting this reply; null when it has no deadline. */
+  expiresAt: Date | null;
   mediaId: string | null;
   tone: string;
   status: ReplyStatus;
   error: string | null;
   createdAt: Date;
 };
+
+const HOUR_MS = 60 * 60 * 1000;
+/** Instagram accepts the one private reply to a comment for 7 days after the comment. */
+export const PRIVATE_REPLY_WINDOW_MS = 7 * 24 * HOUR_MS;
+/** A DM can be answered for 24 hours after the customer's latest message. */
+export const DM_WINDOW_MS = 24 * HOUR_MS;
+
+/**
+ * When Instagram stops accepting a reply: `receivedAt` is the comment's time for a private reply
+ * and the customer's latest DM for a DM. Replies under a comment have no deadline.
+ */
+export function replyDeadline(kind: InboxKind, channel: "reply" | "private", receivedAt: Date): Date | null {
+  if (kind === "comment" && channel === "reply") return null;
+  return new Date(receivedAt.getTime() + (kind === "comment" ? PRIVATE_REPLY_WINDOW_MS : DM_WINDOW_MS));
+}
+
+export const PRIVATE_WINDOW_CLOSED = "مهلت اینستاگرام گذشته: دایرکت به نویسندهٔ کامنت فقط تا ۷ روز بعد از کامنت ممکن است. پاسخ زیر کامنت هنوز ممکن است.";
+export const DM_WINDOW_CLOSED = "مهلت اینستاگرام گذشته: به دایرکت فقط تا ۲۴ ساعت بعد از آخرین پیام مشتری می‌شود جواب داد. اگر دوباره پیام بدهد، مهلت دوباره باز می‌شود.";
+/** Instagram's own refusal (code 10 / 2534022) when the window has closed. */
+export const WINDOW_CLOSED = "مهلت ارسال اینستاگرام گذشته (دایرکت: ۲۴ ساعت بعد از آخرین پیام مشتری؛ دایرکت به نویسندهٔ کامنت: ۷ روز بعد از کامنت).";
 
 export const channelOf = (kind: InboxKind): InboxChannel => (kind === "dm" ? "DM" : "کامنت");
 
