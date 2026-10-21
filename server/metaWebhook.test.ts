@@ -132,6 +132,13 @@ describe("POST /api/meta/webhook", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("42");
   });
+
+  it("rejects a wrong verify token but tells a browser visit that the endpoint works", async () => {
+    expect((await fetch(`${base}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=42`)).status).toBe(403);
+    const res = await fetch(base);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("webhook is up");
+  });
 });
 
 describe("describePayload", () => {

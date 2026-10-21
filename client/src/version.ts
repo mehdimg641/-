@@ -5,6 +5,7 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  { version: "1.6.1", items: ["باز کردن آدرس وبهوک در مرورگر به‌جای «invalid» پیام «وبهوک فعال است» نشان می‌دهد"] },
   {
     version: "1.6.0",
     items: [

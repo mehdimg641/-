@@ -151,8 +151,13 @@ function describeResult(payload: ReturnType<typeof describePayload>, kept: numbe
   return `accounts: ${payload.accounts.join(",") || "-"} | fields: ${payload.fields.join(",") || "-"} | stored ${result.stored}, duplicate ${result.duplicates}, ignored ${payload.items - kept}`;
 }
 
+const WEBHOOK_HELLO =
+  "✓ وبهوک Sepand Inbox فعال است.\nاین آدرس را در داشبورد Meta به‌عنوان Callback URL وارد کنید؛ Meta با Verify Token تأییدش می‌کند (باز کردن در مرورگر لازم نیست).\nنتیجهٔ درخواست‌های Meta: تنظیمات ← عیب‌یابی دریافت پیام.\n\n✓ Sepand Inbox webhook is up. Use this URL as the Callback URL in the Meta dashboard; Meta verifies it with the Verify Token.\n";
+
 export function registerMetaWebhook(app: Express) {
   app.get(WEBHOOK_PATH, async (req: Request, res: Response) => {
+    // Someone opened the URL in a browser; Meta always sends hub.mode. Say it works instead of "invalid".
+    if (req.query["hub.mode"] === undefined) return res.status(200).type("text/plain; charset=utf-8").send(WEBHOOK_HELLO);
     await refreshMetaSettings();
     const challenge = getMetaWebhookChallenge(req.query["hub.mode"], req.query["hub.verify_token"], req.query["hub.challenge"]);
     if (challenge) {

@@ -11,12 +11,21 @@ require __DIR__ . '/lib/meta_webhook.php';
 require __DIR__ . '/lib/inbox.php';
 
 const MAX_BODY_BYTES = 1048576;
+const WEBHOOK_HELLO = "✓ وبهوک Sepand Inbox فعال است.\nاین آدرس را در داشبورد Meta به‌عنوان Callback URL وارد کنید؛ Meta با Verify Token تأییدش می‌کند (باز کردن در مرورگر لازم نیست).\nنتیجهٔ درخواست‌های Meta: تنظیمات ← عیب‌یابی دریافت پیام.\n\n✓ Sepand Inbox webhook is up. Use this URL as the Callback URL in the Meta dashboard; Meta verifies it with the Verify Token.\n";
 
 try {
     meta_settings();
 } catch (Throwable $e) {
     error_log('[Sepand Webhook] ' . $e->getMessage());
     send_json(503, ['error' => 'Temporarily unavailable']);
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && !isset($_GET['hub_mode'])) {
+    // Someone opened the URL in a browser; Meta always sends hub.mode. Say it works instead of "invalid".
+    http_response_code(200);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo WEBHOOK_HELLO;
     exit;
 }
 
