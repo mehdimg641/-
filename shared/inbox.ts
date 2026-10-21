@@ -68,3 +68,18 @@ export function filterInboxThreads(
     return matchesSearch && matchesFilter && matchesChannel;
   });
 }
+
+/**
+ * Account ids as typed on a Persian keyboard: Persian/Arabic digits, the Persian comma «،» and
+ * spaces become "17841457283303858,…".
+ */
+export function normalizeAccountIds(value: string) {
+  return toLatinDigits(value)
+    .replace(/[،؛;\s]+/g, ",")
+    .replace(/,{2,}/g, ",")
+    .replace(/^,|,$/g, "");
+}
+
+export function toLatinDigits(value: string) {
+  return value.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660));
+}

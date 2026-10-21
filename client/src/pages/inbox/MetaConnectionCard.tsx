@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AlertCircle, CheckCircle2, Copy, KeyRound, RefreshCw, Save, Wand2 } from "lucide-react";
+import { toLatinDigits } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import { errorMessage, StatusPill } from "./ui";
 
@@ -107,7 +108,7 @@ export function MetaConnectionCard() {
 
       <label className="meta-field">
         <span className="meta-field-head">شناسهٔ عددی حساب اینستاگرام <StatusPill tone={sourceTone(data.accountIds.source)}>{sourceLabel(data.accountIds.source)}</StatusPill></span>
-        <input dir="auto" value={accountValue} onChange={(e) => setAccountIds(e.target.value)} placeholder="با «تست اتصال» خودکار پر می‌شود" />
+        <input dir="auto" value={accountValue} onChange={(e) => setAccountIds(toLatinDigits(e.target.value))} placeholder="با «تست اتصال» خودکار پر می‌شود" />
         <small>فقط رویدادهای این حساب(ها) پذیرفته می‌شوند. چند شناسه را با ویرگول جدا کنید.</small>
       </label>
 

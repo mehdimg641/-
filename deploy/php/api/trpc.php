@@ -290,8 +290,15 @@ function procedures(): array
             opt_secret($in, 'verifyToken', $patch, 'META_WEBHOOK_VERIFY_TOKEN');
             if (array_key_exists('accountIds', $in)) {
                 $ids = $in['accountIds'];
-                if ($ids !== null && (!is_string($ids) || !preg_match('/^[0-9,\s]*$/', $ids))) throw new ApiError('BAD_REQUEST', 'فقط شناسه‌های عددی، جداشده با ویرگول');
-                $patch['INSTAGRAM_ACCOUNT_IDS'] = $ids === null ? null : preg_replace('/\s+/', '', $ids);
+                if ($ids !== null && !is_string($ids)) throw new ApiError('BAD_REQUEST', 'شناسهٔ حساب نامعتبر است');
+                if ($ids !== null) {
+                    // Typed on a Persian keyboard: Persian/Arabic digits, «،» and spaces.
+                    $ids = strtr($ids, ['۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4', '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+                        '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4', '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9']);
+                    $ids = trim((string) preg_replace(['/[،؛;\s]+/u', '/,{2,}/'], [',', ','], $ids), ',');
+                    if (!preg_match('/^[0-9,]*$/', $ids)) throw new ApiError('BAD_REQUEST', 'شناسهٔ حساب فقط رقم است (مثل 17841457283303858)؛ چند شناسه را با ویرگول جدا کنید');
+                }
+                $patch['INSTAGRAM_ACCOUNT_IDS'] = $ids;
             }
             if (array_key_exists('autoReply', $in)) {
                 if (!is_bool($in['autoReply'])) throw new ApiError('BAD_REQUEST', 'autoReply نامعتبر است');

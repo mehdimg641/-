@@ -5,6 +5,7 @@ export const APP_BUILD = __APP_BUILD__;
 
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
+  { version: "1.6.5", items: ["شناسهٔ حساب اینستاگرام با ارقام فارسی (صفحه‌کلید فارسی) و ویرگول فارسی هم ذخیره می‌شود"] },
   { version: "1.6.4", items: ["دکمهٔ «استفاده از این شناسه» وقتی رویداد Meta برای شناسهٔ حساب دیگری می‌آید"] },
   {
     version: "1.6.3",

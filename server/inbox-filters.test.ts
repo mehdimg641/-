@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterInboxThreads, type InboxThread } from "../shared/inbox";
+import { filterInboxThreads, normalizeAccountIds, type InboxThread } from "../shared/inbox";
 
 const threads: InboxThread[] = [
   {
@@ -50,5 +50,13 @@ describe("filterInboxThreads", () => {
 
   it("filters priority conversations", () => {
     expect(filterInboxThreads(threads, "", "priority", "all").map((thread) => thread.id)).toEqual(["dm:1"]);
+  });
+});
+
+describe("normalizeAccountIds", () => {
+  it("accepts ids typed on a Persian keyboard", () => {
+    expect(normalizeAccountIds("۱۷۸۴۱۴۵۷۲۸۳۳۰۳۸۵۸")).toBe("17841457283303858");
+    expect(normalizeAccountIds(" 17841457283303858، ١٢٣ ")).toBe("17841457283303858,123");
+    expect(normalizeAccountIds("")).toBe("");
   });
 });

@@ -1,4 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
+import { normalizeAccountIds } from "@shared/inbox";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -205,7 +206,12 @@ const settingsRouter = router({
         accessToken: secretField,
         appSecret: secretField,
         verifyToken: secretField,
-        accountIds: z.string().trim().regex(/^[0-9,\s]*$/, "فقط شناسه‌های عددی، جداشده با ویرگول").nullable().optional(),
+        accountIds: z
+          .string()
+          .transform(normalizeAccountIds)
+          .pipe(z.string().regex(/^[0-9,]*$/, "شناسهٔ حساب فقط رقم است (مثل 17841457283303858)؛ چند شناسه را با ویرگول جدا کنید"))
+          .nullable()
+          .optional(),
         autoReply: z.boolean().optional(),
       }),
     )
@@ -215,7 +221,7 @@ const settingsRouter = router({
           META_ACCESS_TOKEN: input.accessToken,
           META_APP_SECRET: input.appSecret,
           META_WEBHOOK_VERIFY_TOKEN: input.verifyToken,
-          INSTAGRAM_ACCOUNT_IDS: input.accountIds === undefined || input.accountIds === null ? input.accountIds : input.accountIds.replace(/\s+/g, ""),
+          INSTAGRAM_ACCOUNT_IDS: input.accountIds,
           META_AUTO_REPLY: input.autoReply === undefined ? undefined : input.autoReply ? "true" : "false",
         });
       } catch (error) {
