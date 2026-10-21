@@ -61,9 +61,17 @@ function reply_to_comment(string $commentId, string $message): array
 }
 
 /** Meta only allows DM replies within 24 hours of the user's last message. */
-function send_direct_message(string $recipientId, string $text): array
+function with_quick_replies(string $text, ?array $quickReplies): array
 {
-    return graph_request('POST', '/me/messages', ['recipient' => ['id' => $recipientId], 'message' => ['text' => $text]]);
+    if (!$quickReplies) return ['text' => $text];
+    return ['text' => $text, 'quick_replies' => array_map(function ($q) {
+        return ['content_type' => 'text', 'title' => $q['title'], 'payload' => $q['payload']];
+    }, $quickReplies)];
+}
+
+function send_direct_message(string $recipientId, string $text, ?array $quickReplies = null): array
+{
+    return graph_request('POST', '/me/messages', ['recipient' => ['id' => $recipientId], 'message' => with_quick_replies($text, $quickReplies)]);
 }
 
 function test_meta_connection(): array
@@ -89,9 +97,9 @@ function test_meta_connection(): array
 }
 
 /** DM to the author of a comment (Instagram "private reply"); once per comment, within 7 days. */
-function send_private_reply(string $commentId, string $text): array
+function send_private_reply(string $commentId, string $text, ?array $quickReplies = null): array
 {
-    return graph_request('POST', '/me/messages', ['recipient' => ['comment_id' => $commentId], 'message' => ['text' => $text]]);
+    return graph_request('POST', '/me/messages', ['recipient' => ['comment_id' => $commentId], 'message' => with_quick_replies($text, $quickReplies)]);
 }
 
 function media_owner(): string

@@ -60,7 +60,8 @@ function extract_events(array $body): array
             if (empty($message['mid']) || empty($message['text']) || !empty($message['is_echo']) || !empty($message['is_deleted'])) continue;
             if ($senderId === null || $isOwn($senderId)) continue;
             $events[] = ['accountId' => $accountId, 'kind' => 'dm', 'externalId' => (string) $message['mid'], 'senderId' => (string) $senderId,
-                'username' => null, 'text' => (string) $message['text'], 'mediaId' => null];
+                'username' => null, 'text' => (string) $message['text'], 'mediaId' => null,
+                'payload' => isset($message['quick_reply']['payload']) ? (string) $message['quick_reply']['payload'] : null];
         }
     }
     return $events;

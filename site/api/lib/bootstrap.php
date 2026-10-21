@@ -130,12 +130,14 @@ function ensure_schema(PDO $pdo): void
         ['replyRules', 'dmTemplate', "ALTER TABLE `replyRules` ADD `dmTemplate` text NULL"],
         ['replyRules', 'dmTemplateId', "ALTER TABLE `replyRules` ADD `dmTemplateId` int NULL"],
         ['replyRules', 'mediaIds', "ALTER TABLE `replyRules` ADD `mediaIds` json NULL"],
+        ['replyRules', 'dmButtons', "ALTER TABLE `replyRules` ADD `dmButtons` json NULL"],
+        ['replies', 'quickReplies', "ALTER TABLE `replies` ADD `quickReplies` json NULL"],
     ];
     // Cheap check first: skip the DDL once every table and column exists.
     $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia','webhookLog')")->fetchColumn();
     $haveColumns = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND (
-        (table_name = 'replies' AND column_name = 'channel') OR
-        (table_name = 'replyRules' AND column_name IN ('templateId','dmTemplate','dmTemplateId','mediaIds')))")->fetchColumn();
+        (table_name = 'replies' AND column_name IN ('channel','quickReplies')) OR
+        (table_name = 'replyRules' AND column_name IN ('templateId','dmTemplate','dmTemplateId','mediaIds','dmButtons')))")->fetchColumn();
     if ($haveTables === count($tables) && $haveColumns === count($columns)) return;
     foreach ($tables as $ddl) $pdo->exec($ddl . ' DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
     $check = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?");

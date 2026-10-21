@@ -32,6 +32,7 @@ function reply_row(array $row): array
         'source' => $row['source'],
         'channel' => $row['channel'] ?? 'reply',
         'text' => $row['text'],
+        'quickReplies' => ($row['quickReplies'] ?? null) === null ? null : array_values(json_decode((string) $row['quickReplies'], true) ?: []),
         'status' => $row['status'],
         'error' => $row['error'],
         'decidedBy' => $row['decidedBy'] === null ? null : (int) $row['decidedBy'],
@@ -56,21 +57,87 @@ function get_reply(int $id): ?array
     return $row ? reply_row($row) : null;
 }
 
-function create_reply(int $eventId, ?int $ruleId, string $source, string $text, ?int $decidedBy = null, string $channel = 'reply'): int
+function create_reply(int $eventId, ?int $ruleId, string $source, string $text, ?int $decidedBy = null, string $channel = 'reply', ?array $quickReplies = null): int
 {
-    db()->prepare("INSERT INTO replies (eventId, ruleId, source, channel, text, status, decidedBy) VALUES (?, ?, ?, ?, ?, 'pending', ?)")
-        ->execute([$eventId, $ruleId, $source, $channel, $text, $decidedBy]);
+    db()->prepare("INSERT INTO replies (eventId, ruleId, source, channel, text, quickReplies, status, decidedBy) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)")
+        ->execute([$eventId, $ruleId, $source, $channel, $text, $quickReplies ? json_encode($quickReplies, JSON_UNESCAPED_UNICODE) : null, $decidedBy]);
     return (int) db()->lastInsertId();
 }
 
+function button_payload(int $ruleId, int $index, int $eventId): string
+{
+    return "SEPAND:$ruleId:$index:$eventId";
+}
+
+function parse_button_payload(?string $payload): ?array
+{
+    if ($payload === null || !preg_match('/^SEPAND:(\d+):(\d+):(\d+)$/', $payload, $m)) return null;
+    return ['ruleId' => (int) $m[1], 'index' => (int) $m[2], 'eventId' => (int) $m[3]];
+}
+
+/** When Instagram refuses the buttons, the options go into the text; typing one counts as a tap. */
+function options_as_text(string $text, array $buttons): string
+{
+    return $text . "\n\nبرای ادامه یکی از این‌ها را بنویسید: " . implode('، ', array_map(function ($b) { return '«' . $b['title'] . '»'; }, $buttons));
+}
+
+/** How long after a DM with buttons a typed option still counts as a tap (Instagram's reply window). */
+const TAP_WINDOW_SECONDS = 86400;
+
+/**
+ * A DM that answers one of our buttons: the tapped quick reply, or the same title typed by the
+ * person we sent the buttons to. Returns the rule option to send, or null for an ordinary DM.
+ */
+function resolve_tap(array $event, array $rules): ?array
+{
+    if ($event['kind'] !== 'dm') return null;
+    $tap = parse_button_payload($event['payload'] ?? null);
+    if ($tap === null) {
+        $typed = trim(normalize_text($event['text']));
+        $stmt = db()->prepare("SELECT r.quickReplies FROM replies r JOIN igEvents e ON e.id = r.eventId
+            WHERE e.senderId = ? AND r.status = 'sent' AND r.quickReplies IS NOT NULL AND r.sentAt >= NOW() - INTERVAL " . TAP_WINDOW_SECONDS . " SECOND
+            ORDER BY r.sentAt DESC, r.id DESC LIMIT 20");
+        $stmt->execute([$event['senderId']]);
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $json) {
+            foreach (json_decode((string) $json, true) ?: [] as $q) {
+                if (trim(normalize_text((string) $q['title'])) === $typed) { $tap = parse_button_payload((string) $q['payload']); break 2; }
+            }
+        }
+    }
+    if ($tap === null) return null;
+    foreach ($rules as $rule) {
+        if ($rule['id'] !== $tap['ruleId']) continue;
+        $button = $rule['dmButtons'][$tap['index']] ?? null;
+        if (!$button) return null;
+        $source = get_event($tap['eventId']);
+        return ['rule' => $rule, 'parts' => split_messages(render_template((string) $button['reply'], (string) ($source['username'] ?? '')))];
+    }
+    return null;
+}
+
 /** The drafts a decision calls for, in send order. */
-function draft_parts(string $kind, array $decision): array
+function draft_parts(string $kind, array $decision, int $eventId): array
 {
     // Each "---" part is its own reply, drafted (and later sent) in order.
-    $parts = array_map(function ($text) { return ['channel' => 'reply', 'text' => $text]; }, split_messages($decision['message']));
+    $parts = array_map(function ($text) { return ['channel' => 'reply', 'text' => $text, 'quickReplies' => null]; }, split_messages($decision['message']));
     // Instagram allows one private reply per comment, so its parts go out as one message.
     $dm = $kind === 'comment' ? join_messages($decision['dmMessage']) : '';
-    if ($dm !== '') $parts[] = ['channel' => 'private', 'text' => $dm];
+    if ($dm !== '') $parts[] = ['channel' => 'private', 'text' => $dm, 'quickReplies' => null];
+    // The rule's buttons ride on its direct message: the private reply for a comment, the last
+    // message for a DM. A public comment reply can't carry buttons.
+    $buttons = $decision['rule']['dmButtons'] ?? [];
+    $carrier = null;
+    if ($kind === 'comment') {
+        foreach ($parts as $i => $p) if ($p['channel'] === 'private') $carrier = $i;
+    } elseif ($parts) {
+        $carrier = count($parts) - 1;
+    }
+    if ($buttons && $carrier !== null) {
+        $ruleId = $decision['rule']['id'];
+        $parts[$carrier]['quickReplies'] = array_map(function ($b, $i) use ($ruleId, $eventId) {
+            return ['title' => $b['title'], 'payload' => button_payload($ruleId, $i, $eventId)];
+        }, $buttons, array_keys($buttons));
+    }
     return $parts;
 }
 
@@ -78,7 +145,7 @@ function draft_parts(string $kind, array $decision): array
 function create_drafts(int $eventId, string $kind, array $decision): array
 {
     $ids = [];
-    foreach (draft_parts($kind, $decision) as $part) $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $part['text'], null, $part['channel']);
+    foreach (draft_parts($kind, $decision, $eventId) as $part) $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $part['text'], null, $part['channel'], $part['quickReplies']);
     return $ids;
 }
 
@@ -107,14 +174,22 @@ function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = 
     $insert = $pdo->prepare("INSERT IGNORE INTO igEvents (accountId, kind, externalId, senderId, username, text, mediaId, ruleId, isRead, createdAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))");
     foreach ($events as $e) {
-        $decision = decide_reply($rules, $templates, $e['kind'], (string) ($e['username'] ?? ''), $e['text'], $e['mediaId']);
+        $tap = $draft ? resolve_tap($e, $rules) : null;
+        $decision = $tap ? null : decide_reply($rules, $templates, $e['kind'], (string) ($e['username'] ?? ''), $e['text'], $e['mediaId']);
+        $ruleId = $tap ? $tap['rule']['id'] : ($decision ? $decision['rule']['id'] : null);
         $insert->execute([$e['accountId'], $e['kind'], $e['externalId'], $e['senderId'], $e['username'], $e['text'], $e['mediaId'],
-            $decision ? $decision['rule']['id'] : null, $read ? 1 : 0, $e['at'] ?? null]);
+            $ruleId, $read ? 1 : 0, $e['at'] ?? null]);
         if ($insert->rowCount() === 0) {
             $result['duplicates']++;
             continue;
         }
         $result['stored']++;
+        if ($tap) {
+            // Approving the first DM approved its options: the answer goes out right away.
+            $eventId = (int) $pdo->lastInsertId();
+            foreach ($tap['parts'] as $text) $result['toSend'][] = create_reply($eventId, $tap['rule']['id'], 'rule', $text);
+            continue;
+        }
         if (!$decision || !$draft) continue;
         $ids = create_drafts((int) $pdo->lastInsertId(), $e['kind'], $decision);
         if ($autoSend && $decision['rule']['action'] === 'send') $result['toSend'] = array_merge($result['toSend'], $ids);
@@ -145,8 +220,8 @@ function redraft_pending(): array
         foreach ($own as $reply) if ($reply['status'] !== 'pending' || $reply['source'] !== 'rule') continue 2;
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         $ruleId = $decision ? $decision['rule']['id'] : null;
-        $wanted = $decision ? draft_parts($event['kind'], $decision) : [];
-        $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text']]; }, $own);
+        $wanted = $decision ? draft_parts($event['kind'], $decision, $event['id']) : [];
+        $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text'], 'quickReplies' => $r['quickReplies']]; }, $own);
         $sameRule = $event['ruleId'] === $ruleId && !array_filter($own, function ($r) use ($ruleId) { return $r['ruleId'] !== $ruleId; });
         if ($sameRule && $current === $wanted) continue;
         if ($own) {
@@ -183,11 +258,22 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
 
     $text = trim($editedText ?? $reply['text']);
+    $buttons = $reply['quickReplies'] ?: null;
+    $send = function (string $body, ?array $quickReplies) use ($reply, $event) {
+        if ($reply['channel'] === 'private') send_private_reply($event['externalId'], $body, $quickReplies);
+        elseif ($event['kind'] === 'comment') reply_to_comment($event['externalId'], $body);
+        else send_direct_message($event['senderId'], $body, $quickReplies);
+    };
     try {
         if ($text === '') throw new MetaApiError('متن پاسخ خالی است');
-        if ($reply['channel'] === 'private') send_private_reply($event['externalId'], $text);
-        elseif ($event['kind'] === 'comment') reply_to_comment($event['externalId'], $text);
-        else send_direct_message($event['senderId'], $text);
+        try {
+            $send($text, $buttons);
+        } catch (MetaApiError $e) {
+            // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
+            if (!$buttons) throw $e;
+            $text = options_as_text($text, $buttons);
+            $send($text, null);
+        }
         db()->prepare("UPDATE replies SET text = ?, status = 'sent', error = NULL, decidedBy = ?, sentAt = UTC_TIMESTAMP() WHERE id = ?")->execute([$text, $operatorId, $replyId]);
         return ['ok' => true];
     } catch (Throwable $e) {
@@ -335,6 +421,7 @@ function list_approvals(): array
             'draft' => $reply['text'],
             'reason' => $reply['source'] === 'manual' ? 'پاسخ دستی' : $s['tag'],
             'replyChannel' => $reply['channel'],
+            'buttons' => array_column($reply['quickReplies'] ?? [], 'title'),
             'mediaId' => $row['mediaId'],
             'tone' => $s['tone'],
             'status' => $reply['status'],
