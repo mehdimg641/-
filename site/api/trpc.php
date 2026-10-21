@@ -153,7 +153,7 @@ function opt_secret(array $in, string $key, array &$patch, string $setting): voi
     if (!array_key_exists($key, $in)) return;
     $v = $in[$key];
     if ($v !== null && (!is_string($v) || mb_strlen($v) > 1000)) throw new ApiError('BAD_REQUEST', "$key نامعتبر است");
-    $patch[$setting] = $v;
+    $patch[$setting] = $v === null ? null : trim($v);
 }
 
 // --- procedures -------------------------------------------------------------------------------

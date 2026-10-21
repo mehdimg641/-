@@ -33,7 +33,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'GET') {
     // PHP turns "hub.mode" into "hub_mode" in $_GET.
     $challenge = webhook_challenge($_GET['hub_mode'] ?? null, $_GET['hub_verify_token'] ?? null, $_GET['hub_challenge'] ?? null);
     if ($challenge === null) {
-        record_webhook('GET', 403, 'challenge_bad_token');
+        record_webhook('GET', 403, 'challenge_bad_token', 'Meta sent ' . token_hint($_GET['hub_verify_token'] ?? null) . ', saved here ' . token_hint(meta_setting('META_WEBHOOK_VERIFY_TOKEN')));
         send_json(403, ['error' => 'Invalid webhook verification token']);
     } else {
         record_webhook('GET', 200, 'challenge_ok');
