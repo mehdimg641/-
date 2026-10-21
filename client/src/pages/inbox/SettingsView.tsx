@@ -15,6 +15,14 @@ function Row({ title, detail, ok, onToggle }: { title: string; detail: string; o
   );
 }
 
+/** The accounts card only shows the allowlist; the field lives in the connection card below. */
+function editAccountIds() {
+  const input = document.getElementById("meta-account-ids") as HTMLInputElement | null;
+  input?.scrollIntoView({ behavior: "smooth", block: "center" });
+  input?.focus();
+  input?.select();
+}
+
 function AutoReplyRow({ enabled }: { enabled: boolean }) {
   const utils = trpc.useUtils();
   const save = trpc.settings.saveMeta.useMutation({
@@ -50,7 +58,7 @@ export function SettingsView({ status }: { status: InboxStatus | undefined }) {
             <div className="settings-card-head"><div className="settings-symbol instagram"><Instagram size={20} /></div><div><h3>حساب‌های اینستاگرام</h3><span>حساب‌هایی که پیام‌هایشان پذیرفته می‌شود</span></div><StatusPill tone={status?.metaConfigured ? "green" : "orange"}>{status?.metaConfigured ? "متصل" : "پیکربندی ناقص"}</StatusPill></div>
             <div className="account-list">
               {status?.accountIds.length ? status.accountIds.map((id) => (
-                <div className="connected-account" key={id}><div className="account-avatar large account-tone-gold"><Instagram size={20} /></div><div><b dir="ltr">{id}</b><span>@sepandsteel</span></div><StatusPill tone="green">مجاز</StatusPill></div>
+                <div className="connected-account" key={id}><div className="account-avatar large account-tone-gold"><Instagram size={20} /></div><div><b dir="ltr">{id}</b><span>@sepandsteel</span></div><StatusPill tone="green">مجاز</StatusPill><button type="button" className="secondary-button compact-button" onClick={editAccountIds}>ویرایش</button></div>
               )) : <div className="settings-warning"><AlertCircle size={16} /><span>هیچ شناسه‌ای تنظیم نشده؛ رویداد همه حساب‌های این برنامه Meta پذیرفته می‌شود. برای امنیت بیشتر شناسهٔ حساب را در «اتصال اینستاگرام» وارد کنید.</span></div>}
             </div>
             {!status?.metaConfigured && <div className="settings-warning"><AlertCircle size={16} /><span>برای دریافت و ارسال واقعی، توکن دسترسی، App Secret و Verify Token را در کارت «اتصال اینستاگرام» وارد کنید.</span></div>}

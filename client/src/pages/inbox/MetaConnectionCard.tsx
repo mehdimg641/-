@@ -108,7 +108,7 @@ export function MetaConnectionCard() {
 
       <label className="meta-field">
         <span className="meta-field-head">شناسهٔ عددی حساب اینستاگرام <StatusPill tone={sourceTone(data.accountIds.source)}>{sourceLabel(data.accountIds.source)}</StatusPill></span>
-        <input dir="auto" value={accountValue} onChange={(e) => setAccountIds(toLatinDigits(e.target.value))} placeholder="با «تست اتصال» خودکار پر می‌شود" />
+        <input id="meta-account-ids" dir="ltr" value={accountValue} onChange={(e) => setAccountIds(toLatinDigits(e.target.value))} placeholder="17841…" />
         <small>فقط رویدادهای این حساب(ها) پذیرفته می‌شوند. چند شناسه را با ویرگول جدا کنید.</small>
       </label>
 
