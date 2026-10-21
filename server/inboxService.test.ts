@@ -137,6 +137,15 @@ describe("comment → reply + DM per post", () => {
     expect(JSON.parse(dmCall[1].body)).toEqual({ recipient: { comment_id: "c1" }, message: { text: "سلام hossein.rz، لیست قیمت را فرستادیم." } });
   });
 
+  it("marks a queued draft as answered once the other channel was sent", async () => {
+    const store = await storeWithPostRule();
+    await ingestEvents(store, [comment("c1", "قیمت؟")]);
+    expect((await listApprovals(store)).map((a) => a.answered)).toEqual([false, false]);
+    const [publicReply] = await listApprovals(store);
+    await sendReply(store, publicReply.id, null);
+    expect((await listApprovals(store)).map((a) => [a.replyChannel, a.answered])).toEqual([["private", true]]);
+  });
+
   it("shows post comments with both replies and counts them per post", async () => {
     const store = await storeWithPostRule();
     await ingestEvents(store, [comment("c1", "قیمت؟")]);

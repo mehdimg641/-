@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
 import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, splitMessages, type DmButton } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
@@ -449,12 +449,27 @@ function RuleTester({ posts }: { posts: Post[] }) {
   );
 }
 
+type QueueSort = "newest" | "oldest";
+type QueueKind = "all" | "comment" | "private" | "dm";
+const PAGE = 30;
+const isNew = (item: ApprovalItem) => Date.now() - new Date(item.receivedAt).getTime() < 3_600_000;
+
 function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const utils = trpc.useUtils();
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkNotice, setBulkNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState("");
+  const [search, setSearch] = useState("");
+  const [rule, setRule] = useState("all");
+  const [kind, setKind] = useState<QueueKind>("all");
+  const [status, setStatus] = useState<"all" | "pending" | "failed">("all");
+  const [sort, setSort] = useState<QueueSort>("newest");
+  const [todayOnly, setTodayOnly] = useState(false);
+  const [answer, setAnswer] = useState<"all" | "unanswered" | "answered">("all");
+  const [grouped, setGrouped] = useState(false);
+  const [shown, setShown] = useState(PAGE);
   const refresh = () => {
     utils.approvals.list.invalidate();
     utils.inbox.invalidate();
@@ -468,27 +483,74 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     onError: (error, input) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) })),
   });
   const reject = trpc.approvals.reject.useMutation({ onSuccess: refresh, onError: (error, input) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) })) });
-  const approveMany = trpc.approvals.approveMany.useMutation({
-    onSuccess: (result) => {
-      setErrors((current) => ({ ...current, ...Object.fromEntries(result.failed.map((f) => [f.id, f.error])) }));
-      setBulkNotice({ ok: result.failed.length === 0, text: `${faNum(result.sent)} پاسخ ارسال شد${result.failed.length ? `؛ ${faNum(result.failed.length)} مورد ناموفق بود (خطا زیر هر مورد)` : ""}.` });
-      setSelected(new Set());
-      refresh();
-    },
-    onError: (error) => setBulkNotice({ ok: false, text: errorMessage(error) }),
-  });
-  const busy = (id: number) => approveMany.isPending || (approve.isPending && approve.variables?.id === id) || (reject.isPending && reject.variables?.id === id);
+  const approveMany = trpc.approvals.approveMany.useMutation();
+  const rejectMany = trpc.approvals.rejectMany.useMutation();
+  const busy = (id: number) => Boolean(bulkBusy) || (approve.isPending && approve.variables?.id === id) || (reject.isPending && reject.variables?.id === id);
 
-  // Grouped by the rule that drafted them, so one rule's replies can be approved together.
+  const rules = useMemo(() => Array.from(new Set(items.map((i) => i.reason))), [items]);
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const list = items.filter(
+      (i) =>
+        (rule === "all" || i.reason === rule) &&
+        (status === "all" || i.status === status) &&
+        (answer === "all" || (answer === "unanswered" ? !i.answered : i.answered)) &&
+        (kind === "all" || (kind === "private" ? i.replyChannel === "private" : kind === "dm" ? i.channel === "DM" : i.channel !== "DM" && i.replyChannel === "reply")) &&
+        (!todayOnly || new Date(i.receivedAt) >= startOfDay) &&
+        (!q || `${i.name} ${i.handle} ${i.incoming} ${drafts[i.id] ?? i.draft}`.toLowerCase().includes(q)),
+    );
+    const time = (i: ApprovalItem) => new Date(i.receivedAt).getTime() || new Date(i.createdAt).getTime();
+    return list.sort((a, b) => (sort === "newest" ? time(b) - time(a) || b.id - a.id : time(a) - time(b) || a.id - b.id));
+  }, [items, search, rule, kind, status, answer, sort, todayOnly, drafts]);
+  const visible = filtered.slice(0, shown);
+  // Grouped by the rule that drafted them, in the chosen order.
   const groups = useMemo(() => {
+    if (!grouped) return [["", visible] as const];
     const map = new Map<string, ApprovalItem[]>();
-    for (const item of items) map.set(item.reason, [...(map.get(item.reason) ?? []), item]);
+    for (const item of visible) map.set(item.reason, [...(map.get(item.reason) ?? []), item]);
     return Array.from(map.entries());
-  }, [items]);
-  const sendAll = (list: ApprovalItem[], label: string) => {
+  }, [visible, grouped]);
+
+  // Several batches of at most 100: the server sends each reply to Instagram one by one.
+  const sendAll = async (list: ApprovalItem[], label: string) => {
     if (!list.length || !window.confirm(`${faNum(list.length)} پاسخ ${label} با همین متن‌ها ارسال شود؟`)) return;
     setBulkNotice(null);
-    approveMany.mutate({ items: list.slice(0, 100).map((item) => ({ id: item.id, text: drafts[item.id] })) });
+    let sent = 0;
+    const failed: Array<{ id: number; error: string }> = [];
+    try {
+      for (let i = 0; i < list.length; i += 100) {
+        setBulkBusy(`در حال ارسال… ${faNum(Math.min(i + 100, list.length))} از ${faNum(list.length)}`);
+        const result = await approveMany.mutateAsync({ items: list.slice(i, i + 100).map((item) => ({ id: item.id, text: drafts[item.id] })) });
+        sent += result.sent;
+        failed.push(...result.failed);
+      }
+      setBulkNotice({ ok: failed.length === 0, text: `${faNum(sent)} پاسخ ارسال شد${failed.length ? `؛ ${faNum(failed.length)} مورد ناموفق بود (خطا زیر هر مورد)` : ""}.` });
+    } catch (error) {
+      setBulkNotice({ ok: false, text: errorMessage(error) });
+    } finally {
+      setErrors((current) => ({ ...current, ...Object.fromEntries(failed.map((f) => [f.id, f.error])) }));
+      setSelected(new Set());
+      setBulkBusy("");
+      refresh();
+    }
+  };
+  const rejectAll = async (list: ApprovalItem[], label: string) => {
+    if (!list.length || !window.confirm(`${faNum(list.length)} پیش‌نویس ${label} رد شود؟ (ارسال نمی‌شوند و از صف حذف می‌شوند)`)) return;
+    setBulkNotice(null);
+    setBulkBusy("در حال رد کردن…");
+    try {
+      let rejected = 0;
+      for (let i = 0; i < list.length; i += 1000) rejected += (await rejectMany.mutateAsync({ ids: list.slice(i, i + 1000).map((item) => item.id) })).rejected;
+      setBulkNotice({ ok: true, text: `${faNum(rejected)} پیش‌نویس رد شد.` });
+    } catch (error) {
+      setBulkNotice({ ok: false, text: errorMessage(error) });
+    } finally {
+      setSelected(new Set());
+      setBulkBusy("");
+      refresh();
+    }
   };
   const toggle = (id: number) => setSelected((current) => {
     const next = new Set(current);
@@ -496,33 +558,69 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     else next.add(id);
     return next;
   });
-  const selectedItems = items.filter((item) => selected.has(item.id));
+  const selectedItems = filtered.filter((item) => selected.has(item.id));
+  const filtering = filtered.length !== items.length;
 
   return (
     <div className="approval-card">
       <div className="builder-header"><div><b>صف تأیید اپراتور</b><span>پیش‌نویس‌ها قبل از ارسال اینجا می‌آیند</span></div><StatusPill tone={items.length ? "orange" : "green"}>{items.length ? `${faNum(items.length)} در انتظار` : "پاک است"}</StatusPill></div>
       {items.length > 0 && (
-        <div className="bulk-bar">
-          <label className="bulk-check"><input type="checkbox" checked={selected.size === items.length} onChange={(e) => setSelected(e.target.checked ? new Set(items.map((i) => i.id)) : new Set())} /> انتخاب همه</label>
-          <button className="approve-button" disabled={!selectedItems.length || approveMany.isPending} onClick={() => sendAll(selectedItems, "انتخاب‌شده")}><CheckCheck size={14} /> تأیید انتخاب‌شده‌ها{selectedItems.length ? ` (${faNum(selectedItems.length)})` : ""}</button>
-          <button className="secondary-button compact-button" disabled={approveMany.isPending} onClick={() => sendAll(items, "در صف")}>تأیید همه ({faNum(items.length)})</button>
+        <div className="queue-filters">
+          <div className="search-box compact"><Search size={15} /><input value={search} onChange={(e) => { setSearch(e.target.value); setShown(PAGE); }} placeholder="جستجو در نام، کامنت یا متن پاسخ..." /></div>
+          <select value={sort} onChange={(e) => setSort(e.target.value as QueueSort)}>
+            <option value="newest">جدیدترین اول</option>
+            <option value="oldest">قدیمی‌ترین اول</option>
+          </select>
+          <select value={rule} onChange={(e) => { setRule(e.target.value); setShown(PAGE); }}>
+            <option value="all">همهٔ قانون‌ها</option>
+            {rules.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <select value={kind} onChange={(e) => { setKind(e.target.value as QueueKind); setShown(PAGE); }}>
+            <option value="all">همهٔ انواع</option>
+            <option value="comment">پاسخ زیر کامنت</option>
+            <option value="private">دایرکت به نویسندهٔ کامنت</option>
+            <option value="dm">پاسخ دایرکت</option>
+          </select>
+          <select value={status} onChange={(e) => { setStatus(e.target.value as typeof status); setShown(PAGE); }}>
+            <option value="all">همهٔ وضعیت‌ها</option>
+            <option value="pending">در انتظار تأیید</option>
+            <option value="failed">ارسال ناموفق</option>
+          </select>
+          <select value={answer} onChange={(e) => { setAnswer(e.target.value as typeof answer); setShown(PAGE); }}>
+            <option value="all">جواب‌داده‌شده و نشده</option>
+            <option value="unanswered">جواب داده نشده</option>
+            <option value="answered">جواب گرفته (کانال دیگر مانده)</option>
+          </select>
+          <label className="bulk-check"><input type="checkbox" checked={todayOnly} onChange={(e) => { setTodayOnly(e.target.checked); setShown(PAGE); }} /> فقط امروز</label>
+          <label className="bulk-check"><input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} /> گروه‌بندی بر اساس قانون</label>
         </div>
       )}
-      {approveMany.isPending && <span className="field-tip">در حال ارسال… (هر پاسخ جدا به اینستاگرام فرستاده می‌شود)</span>}
+      {items.length > 0 && (
+        <div className="bulk-bar">
+          <label className="bulk-check"><input type="checkbox" checked={filtered.length > 0 && selectedItems.length === filtered.length} onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((i) => i.id)) : new Set())} /> انتخاب همه{filtering ? " (فیلترشده)" : ""}</label>
+          <button className="approve-button" disabled={!selectedItems.length || Boolean(bulkBusy)} onClick={() => sendAll(selectedItems, "انتخاب‌شده")}><CheckCheck size={14} /> تأیید انتخاب‌شده‌ها{selectedItems.length ? ` (${faNum(selectedItems.length)})` : ""}</button>
+          <button className="reject-button wide" disabled={!selectedItems.length || Boolean(bulkBusy)} onClick={() => rejectAll(selectedItems, "انتخاب‌شده")}><X size={13} /> رد انتخاب‌شده‌ها</button>
+          <button className="secondary-button compact-button" disabled={!filtered.length || Boolean(bulkBusy)} onClick={() => sendAll(filtered, filtering ? "فیلترشده" : "در صف")}>تأیید همه{filtering ? "ٔ فیلترشده‌ها" : ""} ({faNum(filtered.length)})</button>
+        </div>
+      )}
+      {bulkBusy && <span className="field-tip">{bulkBusy} (هر پاسخ جدا به اینستاگرام فرستاده می‌شود)</span>}
       {bulkNotice && <div className={bulkNotice.ok ? "settings-success" : "settings-warning"}>{bulkNotice.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}<span>{bulkNotice.text}</span></div>}
-      {items.length ? (
+      {items.length > 0 && filtering && <span className="field-tip">{faNum(filtered.length)} مورد از {faNum(items.length)} با فیلترها جور است.</span>}
+      {filtered.length ? (
         groups.map(([reason, list]) => (
-          <div className="approval-group" key={reason}>
-            <div className="approval-group-head">
-              <b>{reason}</b> <small>{faNum(list.length)} مورد</small>
-              {list.length > 1 && <button className="text-button" disabled={approveMany.isPending} onClick={() => sendAll(list, `قانون «${reason}»`)}><CheckCheck size={13} /> تأیید همهٔ این دسته</button>}
-            </div>
+          <div className="approval-group" key={reason || "all"}>
+            {grouped && (
+              <div className="approval-group-head">
+                <b>{reason}</b> <small>{faNum(filtered.filter((i) => i.reason === reason).length)} مورد</small>
+                <button className="text-button" disabled={Boolean(bulkBusy)} onClick={() => sendAll(filtered.filter((i) => i.reason === reason), `قانون «${reason}»`)}><CheckCheck size={13} /> تأیید همهٔ این دسته</button>
+              </div>
+            )}
             {list.map((item) => (
-              <div className="approval-item" key={item.id}>
+              <div className={isNew(item) ? "approval-item fresh" : "approval-item"} key={item.id}>
                 <input className="approval-select" type="checkbox" aria-label="انتخاب" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
                 <div className={`approval-avatar ${item.tone}`}>{item.name[0]}</div>
                 <div className="approval-copy">
-                  <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} {relativeTime(item.receivedAt)}{Math.abs(new Date(item.createdAt).getTime() - new Date(item.receivedAt).getTime()) > 3_600_000 ? ` · پیش‌نویس ${relativeTime(item.createdAt)}` : ""}</small></b>
+                  <b>{item.name} {isNew(item) && <StatusPill tone="green">جدید</StatusPill>} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} {relativeTime(item.receivedAt)}{Math.abs(new Date(item.createdAt).getTime() - new Date(item.receivedAt).getTime()) > 3_600_000 ? ` · پیش‌نویس ${relativeTime(item.createdAt)}` : ""}</small></b>
                   <p>{item.incoming}</p>
                   <span className={`reply-kind ${item.replyChannel}`}>
                     {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}
@@ -530,6 +628,7 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
                   <textarea className="approval-draft" value={drafts[item.id] ?? item.draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} />
                   {item.buttons.length > 0 && <div className="quick-replies">{item.buttons.map((b) => <span key={b} className="quick-reply">{b}</span>)}</div>}
                   <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
+                  {item.answered && <StatusPill tone="green">جواب گرفته</StatusPill>}
                   {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
                 </div>
                 <div className="approval-actions">
@@ -540,8 +639,13 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
             ))}
           </div>
         ))
+      ) : items.length ? (
+        <div className="approval-empty"><Search size={22} /><b>موردی با این فیلترها نیست</b><span>جستجو یا فیلترها را تغییر دهید.</span></div>
       ) : (
         <div className="approval-empty"><CheckCircle2 size={22} /><b>موردی برای بررسی نیست</b><span>پیش‌نویس‌های جدید با رسیدن پیام‌ها اینجا ظاهر می‌شوند.</span></div>
+      )}
+      {filtered.length > shown && (
+        <button className="secondary-button queue-more" onClick={() => setShown((n) => n + PAGE)}>نمایش {faNum(Math.min(PAGE, filtered.length - shown))} مورد دیگر ({faNum(filtered.length - shown)} باقی‌مانده)</button>
       )}
       <div className="approval-footer"><ShieldCheck size={14} /> قیمت و تعهد تجاری همیشه نیازمند تأیید است.</div>
     </div>

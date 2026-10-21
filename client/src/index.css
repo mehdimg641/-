@@ -378,3 +378,11 @@ a.profile-link { text-decoration: none; }
 .quick-reply { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 999px; border: 1px solid #c9a24e; color: #8a6516; font-size: 11px; background: #fffaf0; }
 .button-row textarea, .button-row-head input, .template-text-field textarea { width: 100%; border: 1px solid #e4e5e0; border-radius: 8px; background: #fcfcfa; padding: 8px 10px; font-size: 11px; color: #26333a; }
 .button-row textarea, .template-text-field textarea { min-height: 56px; resize: vertical; line-height: 1.8; }
+
+/* Approval queue: search, filters, paging */
+.queue-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 0; }
+.queue-filters .search-box { flex: 1 1 100%; }
+.queue-filters select { border: 1px solid #e4e5e0; border-radius: 8px; background: #fcfcfa; padding: 5px 8px; font-size: 11px; color: #26333a; }
+.approval-item.fresh { background: #f3faf4; border-radius: 10px; }
+.reject-button.wide { width: auto; padding: 0 10px; gap: 4px; font-size: 11px; display: inline-flex; align-items: center; }
+.queue-more { align-self: center; margin: 8px auto; display: block; }

@@ -20,7 +20,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { filterInboxThreads, type ApprovalItem, type InboxChannel, type InboxThread } from "@shared/inbox";
+import { filterInboxThreads, isUnanswered, type ApprovalItem, type InboxFilter, type InboxChannel, type InboxThread } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
@@ -58,7 +58,7 @@ type Props = {
 export function InboxView({ threads, approvals, loading, autoReply, composer, setComposer, onOpenAutomation }: Props) {
   const utils = trpc.useUtils();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "unread" | "priority">("all");
+  const [filter, setFilter] = useState<InboxFilter>("all");
   const [channelFilter, setChannelFilter] = useState<"all" | InboxChannel>("all");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
@@ -116,6 +116,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
   };
 
   const unread = threads.filter((thread) => thread.unread).length;
+  const unanswered = threads.filter(isUnanswered).length;
   const pending = approvals.filter((item) => item.status === "pending").length;
   const failed = approvals.filter((item) => item.status === "failed").length;
 
@@ -148,6 +149,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
           <div className="filter-options">
             <button className={filter === "all" ? "selected" : ""} onClick={() => setFilter("all")}>همه</button>
             <button className={filter === "unread" ? "selected" : ""} onClick={() => setFilter("unread")}>خوانده‌نشده</button>
+            <button className={filter === "unanswered" ? "selected" : ""} onClick={() => setFilter("unanswered")}>جواب داده نشده</button>
             <button className={filter === "priority" ? "selected" : ""} onClick={() => setFilter("priority")}>در انتظار تأیید</button>
             <button className={channelFilter === "DM" ? "selected" : ""} onClick={() => setChannelFilter(channelFilter === "DM" ? "all" : "DM")}>دایرکت</button>
             <button className={channelFilter === "کامنت" ? "selected" : ""} onClick={() => setChannelFilter(channelFilter === "کامنت" ? "all" : "کامنت")}>کامنت</button>
@@ -162,6 +164,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
           <div className="list-tabs">
             <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>همه <span>{faNum(threads.length)}</span></button>
             <button className={filter === "unread" ? "active" : ""} onClick={() => setFilter("unread")}>خوانده‌نشده <span>{faNum(unread)}</span></button>
+            <button className={filter === "unanswered" ? "active" : ""} onClick={() => setFilter("unanswered")}>بی‌پاسخ <span>{faNum(unanswered)}</span></button>
             <button className={filter === "priority" ? "active" : ""} onClick={() => setFilter("priority")}>در انتظار تأیید</button>
           </div>
           <div className="thread-scroll">

@@ -142,6 +142,22 @@ const approvalsRouter = router({
       }
       return { sent, failed };
     }),
+  /** Rejects many drafts at once (e.g. a stale batch); already sent or rejected ones are skipped. */
+  rejectMany: adminProcedure
+    .input(z.object({ ids: z.array(z.number().int()).min(1).max(1000) }))
+    .mutation(async ({ input, ctx }) => {
+      const store = await getInboxStore();
+      let rejected = 0;
+      for (const id of input.ids) {
+        try {
+          await rejectReply(store, id, ctx.user.id);
+          rejected++;
+        } catch (error) {
+          if (!(error instanceof ReplyStateError)) throw error;
+        }
+      }
+      return { rejected };
+    }),
   reject: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input, ctx }) =>
     guard(async () => {
       await rejectReply(await getInboxStore(), input.id, ctx.user.id);

@@ -50,6 +50,8 @@ export type ApprovalItem = {
   buttons: string[];
   /** When the comment or DM itself arrived; createdAt is when the draft was made. */
   receivedAt: Date;
+  /** The comment or DM already has a sent reply on some channel. */
+  answered: boolean;
   mediaId: string | null;
   tone: string;
   status: ReplyStatus;
@@ -59,15 +61,28 @@ export type ApprovalItem = {
 
 export const channelOf = (kind: InboxKind): InboxChannel => (kind === "dm" ? "DM" : "کامنت");
 
+export type InboxFilter = "all" | "unread" | "priority" | "unanswered";
+
+/** The contact's latest message has no sent reply after it. */
+export function isUnanswered(thread: InboxThread) {
+  let lastContact = -1;
+  thread.messages.forEach((m, i) => {
+    if (m.from === "contact") lastContact = i;
+  });
+  if (lastContact < 0) return false;
+  return !thread.messages.slice(lastContact + 1).some((m) => m.from === "agent" && m.status === "sent");
+}
+
 export function filterInboxThreads(
   threads: InboxThread[],
   search: string,
-  filter: "all" | "unread" | "priority",
+  filter: InboxFilter,
   channelFilter: "all" | InboxChannel,
 ) {
   return threads.filter((thread) => {
     const matchesSearch = `${thread.name} ${thread.handle} ${thread.message} ${thread.tag}`.toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filter === "all" || (filter === "unread" ? thread.unread : thread.priority);
+    const matchesFilter =
+      filter === "all" || (filter === "unread" ? thread.unread : filter === "unanswered" ? isUnanswered(thread) : thread.priority);
     const matchesChannel = channelFilter === "all" || thread.channel === channelFilter;
     return matchesSearch && matchesFilter && matchesChannel;
   });

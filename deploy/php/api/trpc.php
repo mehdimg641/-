@@ -254,6 +254,20 @@ function procedures(): array
             }
             return ['sent' => $sent, 'failed' => $failed];
         })],
+        // Rejects many drafts at once (e.g. a stale batch); already sent or rejected ones are skipped.
+        'approvals.rejectMany' => ['mutation', $admin(function ($in, $user) {
+            $ids = $in['ids'] ?? null;
+            if (!is_array($ids) || !$ids || count($ids) > 1000) throw new ApiError('BAD_REQUEST', 'بین ۱ تا ۱۰۰۰ مورد انتخاب کنید');
+            $rejected = 0;
+            foreach ($ids as $id) {
+                if (!is_int($id)) throw new ApiError('BAD_REQUEST', 'شناسه نامعتبر است');
+                if (claim_reply($id, ['pending', 'failed'])) {
+                    db()->prepare("UPDATE replies SET status = 'rejected', decidedBy = ? WHERE id = ?")->execute([$user['id'], $id]);
+                    $rejected++;
+                }
+            }
+            return ['rejected' => $rejected];
+        })],
         'approvals.reject' => ['mutation', $admin(function ($in, $user) {
             reject_reply(req_int($in, 'id'), $user['id']);
             return ['success' => true];

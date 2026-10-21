@@ -340,8 +340,11 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
     store.listRules(),
   ]);
   const style = ruleStyle(rules);
+  const open = [...pending, ...failed];
+  const sent = await store.listReplies({ status: "sent", eventIds: Array.from(new Set(open.map((r) => r.eventId))) });
+  const answered = new Set(sent.map((r) => r.eventId));
   const items: ApprovalItem[] = [];
-  for (const reply of [...pending, ...failed]) {
+  for (const reply of open) {
     const event = await store.getEvent(reply.eventId);
     if (!event) continue;
     const { tag, tone } = style(reply.ruleId);
@@ -357,6 +360,7 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
       replyChannel: reply.channel,
       buttons: reply.quickReplies?.map((q) => q.title) ?? [],
       receivedAt: event.createdAt,
+      answered: answered.has(reply.eventId),
       mediaId: event.mediaId,
       tone,
       status: reply.status,
