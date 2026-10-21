@@ -333,3 +333,21 @@ a.profile-link { text-decoration: none; }
 .version-list li { font-size: 10px; color: #6b6558; margin-inline-start: 16px; list-style: disc; }
 .version-list b { font-size: 11px; }
 .settings-symbol.green { color: #5a9a69; background: #e9f6eb; }
+
+/* Automation → rule tester and bulk approval */
+.rule-tester { margin-bottom: 16px; }
+.rule-tester .builder-header b { display: inline-flex; align-items: center; gap: 6px; }
+.tester-result { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.tester-result ol { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.tester-result li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tester-result li.loser { opacity: 0.6; }
+.tester-result li small { color: #7c8687; }
+.tester-reply { font-size: 11px; color: #364148; background: #f6f3ec; border-radius: 8px; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.tester-reply p { flex-basis: 100%; margin: 0; line-height: 1.8; }
+.bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0 10px; border-bottom: 1px solid #f1f1ee; }
+.bulk-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #364148; margin-inline-end: auto; }
+.approval-group + .approval-group { margin-top: 10px; }
+.approval-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 0 4px; font-size: 11px; color: #364148; }
+.approval-group-head small { color: #8a8475; }
+.approval-group-head .text-button { margin-inline-start: auto; }
+.approval-select { align-self: flex-start; margin-top: 10px; }

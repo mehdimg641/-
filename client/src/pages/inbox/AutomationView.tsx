@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { AlertCircle, Bot, Check, CheckCircle2, ChevronLeft, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
 import type { RouterOutputs } from "./types";
@@ -81,6 +81,8 @@ export function AutomationView({ approvals, autoReply, onBack }: { approvals: Ap
           <RuleCard key={rule.id} rule={rule} templates={templates.data ?? []} posts={posts.data ?? []} onEdit={() => { setEditing(rule); setBuilderKey((key) => key + 1); }} />
         ))}
       </div>
+
+      <RuleTester posts={posts.data ?? []} />
 
       <div className="builder-grid">
         <RuleBuilder key={builderKey} rule={editing} templates={templates.data ?? []} posts={posts.data ?? []} onDone={startNew} />
@@ -298,10 +300,72 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
   );
 }
 
+/** Answers "why did (or didn't) this comment get a draft?" before a real customer writes it. */
+function RuleTester({ posts }: { posts: Post[] }) {
+  const [text, setText] = useState("");
+  const [channel, setChannel] = useState<"comment" | "dm">("comment");
+  const [mediaId, setMediaId] = useState<string>("");
+  const [submitted, setSubmitted] = useState<{ text: string; channel: "comment" | "dm"; mediaId: string | null } | null>(null);
+  const result = trpc.rules.test.useQuery(submitted ?? { text: "-", channel: "comment", mediaId: null }, { enabled: submitted !== null });
+  const data = submitted ? result.data : undefined;
+  const winner = data?.matches[0];
+  return (
+    <div className="builder-card rule-tester">
+      <div className="builder-header"><div><b><FlaskConical size={15} /> آزمایش قانون‌ها</b><span>یک کامنت یا دایرکت نمونه بنویسید تا ببینید کدام قانون پاسخ می‌دهد و چه متنی می‌سازد</span></div></div>
+      <div className="builder-fields">
+        <label>کانال
+          <select value={channel} onChange={(e) => setChannel(e.target.value as "comment" | "dm")}>
+            <option value="comment">کامنت</option>
+            <option value="dm">دایرکت</option>
+          </select>
+        </label>
+        {channel === "comment" && (
+          <label>پست
+            <select value={mediaId} onChange={(e) => setMediaId(e.target.value)}>
+              <option value="">هر پستی (فقط قوانین عمومی)</option>
+              {posts.map((p) => <option key={p.id} value={p.id}>{postLabel(p)}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+      <label>متن نمونه<textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="مثلاً: لیست قیمت تیرآهن رو بفرستید" /></label>
+      <div className="builder-buttons">
+        <button className="primary-button" disabled={!text.trim()} onClick={() => setSubmitted({ text: text.trim(), channel, mediaId: channel === "comment" && mediaId ? mediaId : null })}><FlaskConical size={15} /> آزمایش</button>
+      </div>
+      {result.error && submitted && <div className="settings-warning"><AlertCircle size={16} /><span>{errorMessage(result.error)}</span></div>}
+      {data && !winner && (
+        <div className="settings-warning"><AlertCircle size={16} /><span>هیچ قانون فعالی با این متن جور نمی‌شود، پس پیش‌نویسی ساخته نمی‌شود. یک قانون بسازید که یکی از کلمه‌های این متن (مثلاً «لیست») را داشته باشد و کانالش «{channel === "dm" ? "دایرکت" : "کامنت"}» باشد. قالب‌ها به‌تنهایی پاسخی نمی‌سازند؛ باید در یک قانون انتخاب شوند.</span></div>
+      )}
+      {data && winner && (
+        <div className="tester-result">
+          <ol>
+            {data.matches.map((m, i) => (
+              <li key={m.id} className={i === 0 ? "winner" : "loser"}>
+                <b>{m.name}</b> <small>{m.keyword ? `کلمهٔ «${m.keyword}»` : "بدون کلمهٔ محرک (همهٔ پیام‌ها)"} · اولویت {faNum(m.priority)}{m.scoped ? " · مخصوص پست" : ""}</small>
+                {i === 0 ? <StatusPill tone="green">اعمال می‌شود</StatusPill> : <StatusPill tone="slate">نادیده (قانون بالاتر برنده شد)</StatusPill>}
+              </li>
+            ))}
+          </ol>
+          {data.matches.length > 1 && (
+            <span className="field-tip">{faNum(data.matches.length)} قانون با این متن جور شدند ولی فقط اولی اعمال می‌شود. برای اینکه قانون دیگری برنده شود، عدد «اولویت» آن را کوچک‌تر کنید یا کلمه‌های قانون‌های دیگر را دقیق‌تر کنید.</span>
+          )}
+          {data.message ? <div className="tester-reply"><MessageSquareText size={13} /> {channel === "dm" ? "پاسخ دایرکت" : "پاسخ زیر کامنت"}: <p>{data.message}</p></div> : null}
+          {data.dmMessage ? <div className="tester-reply"><Mail size={13} /> دایرکت به نویسندهٔ کامنت: <p>{data.dmMessage}</p></div> : null}
+          {!data.message && !data.dmMessage && (
+            <div className="settings-warning"><AlertCircle size={16} /><span>قانون «{winner.name}» برنده می‌شود ولی متن پاسخی ندارد (قالبش خالی است یا برای این کانال متنی تعریف نشده)، پس پیش‌نویسی ساخته نمی‌شود. قانون را ویرایش کنید.</span></div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
   const utils = trpc.useUtils();
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [errors, setErrors] = useState<Record<number, string>>({});
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkNotice, setBulkNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const refresh = () => {
     utils.approvals.list.invalidate();
     utils.inbox.invalidate();
@@ -315,29 +379,75 @@ function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     onError: (error, input) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) })),
   });
   const reject = trpc.approvals.reject.useMutation({ onSuccess: refresh, onError: (error, input) => setErrors((current) => ({ ...current, [input.id]: errorMessage(error) })) });
-  const busy = (id: number) => (approve.isPending && approve.variables?.id === id) || (reject.isPending && reject.variables?.id === id);
+  const approveMany = trpc.approvals.approveMany.useMutation({
+    onSuccess: (result) => {
+      setErrors((current) => ({ ...current, ...Object.fromEntries(result.failed.map((f) => [f.id, f.error])) }));
+      setBulkNotice({ ok: result.failed.length === 0, text: `${faNum(result.sent)} پاسخ ارسال شد${result.failed.length ? `؛ ${faNum(result.failed.length)} مورد ناموفق بود (خطا زیر هر مورد)` : ""}.` });
+      setSelected(new Set());
+      refresh();
+    },
+    onError: (error) => setBulkNotice({ ok: false, text: errorMessage(error) }),
+  });
+  const busy = (id: number) => approveMany.isPending || (approve.isPending && approve.variables?.id === id) || (reject.isPending && reject.variables?.id === id);
+
+  // Grouped by the rule that drafted them, so one rule's replies can be approved together.
+  const groups = useMemo(() => {
+    const map = new Map<string, ApprovalItem[]>();
+    for (const item of items) map.set(item.reason, [...(map.get(item.reason) ?? []), item]);
+    return Array.from(map.entries());
+  }, [items]);
+  const sendAll = (list: ApprovalItem[], label: string) => {
+    if (!list.length || !window.confirm(`${faNum(list.length)} پاسخ ${label} با همین متن‌ها ارسال شود؟`)) return;
+    setBulkNotice(null);
+    approveMany.mutate({ items: list.slice(0, 100).map((item) => ({ id: item.id, text: drafts[item.id] })) });
+  };
+  const toggle = (id: number) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const selectedItems = items.filter((item) => selected.has(item.id));
 
   return (
     <div className="approval-card">
       <div className="builder-header"><div><b>صف تأیید اپراتور</b><span>پیش‌نویس‌ها قبل از ارسال اینجا می‌آیند</span></div><StatusPill tone={items.length ? "orange" : "green"}>{items.length ? `${faNum(items.length)} در انتظار` : "پاک است"}</StatusPill></div>
+      {items.length > 0 && (
+        <div className="bulk-bar">
+          <label className="bulk-check"><input type="checkbox" checked={selected.size === items.length} onChange={(e) => setSelected(e.target.checked ? new Set(items.map((i) => i.id)) : new Set())} /> انتخاب همه</label>
+          <button className="approve-button" disabled={!selectedItems.length || approveMany.isPending} onClick={() => sendAll(selectedItems, "انتخاب‌شده")}><CheckCheck size={14} /> تأیید انتخاب‌شده‌ها{selectedItems.length ? ` (${faNum(selectedItems.length)})` : ""}</button>
+          <button className="secondary-button compact-button" disabled={approveMany.isPending} onClick={() => sendAll(items, "در صف")}>تأیید همه ({faNum(items.length)})</button>
+        </div>
+      )}
+      {approveMany.isPending && <span className="field-tip">در حال ارسال… (هر پاسخ جدا به اینستاگرام فرستاده می‌شود)</span>}
+      {bulkNotice && <div className={bulkNotice.ok ? "settings-success" : "settings-warning"}>{bulkNotice.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}<span>{bulkNotice.text}</span></div>}
       {items.length ? (
-        items.map((item) => (
-          <div className="approval-item" key={item.id}>
-            <div className={`approval-avatar ${item.tone}`}>{item.name[0]}</div>
-            <div className="approval-copy">
-              <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} · {relativeTime(item.createdAt)}</small></b>
-              <p>{item.incoming}</p>
-              <span className={`reply-kind ${item.replyChannel}`}>
-                {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}
-              </span>
-              <textarea className="approval-draft" value={drafts[item.id] ?? item.draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} />
-              <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
-              {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
+        groups.map(([reason, list]) => (
+          <div className="approval-group" key={reason}>
+            <div className="approval-group-head">
+              <b>{reason}</b> <small>{faNum(list.length)} مورد</small>
+              {list.length > 1 && <button className="text-button" disabled={approveMany.isPending} onClick={() => sendAll(list, `قانون «${reason}»`)}><CheckCheck size={13} /> تأیید همهٔ این دسته</button>}
             </div>
-            <div className="approval-actions">
-              <button className="approve-button" disabled={busy(item.id)} onClick={() => approve.mutate({ id: item.id, text: drafts[item.id] })}><Check size={14} /> {item.status === "failed" ? "تلاش مجدد" : "تأیید و ارسال"}</button>
-              <button className="reject-button" aria-label="رد" title="رد" disabled={busy(item.id)} onClick={() => reject.mutate({ id: item.id })}><X size={14} /></button>
-            </div>
+            {list.map((item) => (
+              <div className="approval-item" key={item.id}>
+                <input className="approval-select" type="checkbox" aria-label="انتخاب" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
+                <div className={`approval-avatar ${item.tone}`}>{item.name[0]}</div>
+                <div className="approval-copy">
+                  <b>{item.name} <small>@{item.handle} · {item.channel === "DM" ? "دایرکت" : "کامنت"} · {relativeTime(item.createdAt)}</small></b>
+                  <p>{item.incoming}</p>
+                  <span className={`reply-kind ${item.replyChannel}`}>
+                    {item.replyChannel === "private" ? <><Mail size={11} /> دایرکت به نویسندهٔ کامنت</> : item.channel === "DM" ? <><Send size={11} /> پاسخ دایرکت</> : <><MessageSquareText size={11} /> پاسخ زیر کامنت</>}
+                  </span>
+                  <textarea className="approval-draft" value={drafts[item.id] ?? item.draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} />
+                  <StatusPill tone={item.status === "failed" ? "orange" : item.tone}>{item.status === "failed" ? "ارسال ناموفق" : item.reason}</StatusPill>
+                  {(errors[item.id] || item.error) && <span className="error-text">{errors[item.id] || item.error}</span>}
+                </div>
+                <div className="approval-actions">
+                  <button className="approve-button" disabled={busy(item.id)} onClick={() => approve.mutate({ id: item.id, text: drafts[item.id] })}><Check size={14} /> {item.status === "failed" ? "تلاش مجدد" : "تأیید و ارسال"}</button>
+                  <button className="reject-button" aria-label="رد" title="رد" disabled={busy(item.id)} onClick={() => reject.mutate({ id: item.id })}><X size={14} /></button>
+                </div>
+              </div>
+            ))}
           </div>
         ))
       ) : (

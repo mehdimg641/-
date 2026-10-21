@@ -88,6 +88,28 @@ const isScoped = (rule: ReplyRule) => Boolean(rule.mediaIds && rule.mediaIds.len
  * First matching rule wins. Rules limited to specific posts are checked before rules for every
  * post, so "keyword X on this post" beats a general rule; within each group, lower priority first.
  */
+/**
+ * Every rule that would answer this text, in the order they are tried; only the first one is
+ * applied. `keyword` is the keyword that matched, or null for a rule without keywords.
+ */
+export function matchingRules(rules: ReplyRule[], channel: ReplyChannel, text: string, mediaId: string | null = null) {
+  const normalized = normalizeText(text);
+  const matches: Array<{ rule: ReplyRule; keyword: string | null }> = [];
+  const ordered = [...rules]
+    .filter((r) => r.enabled && r.channels.includes(channel))
+    .filter((r) => !isScoped(r) || (channel === "comment" && mediaId !== null && r.mediaIds!.includes(mediaId)))
+    .sort((a, b) => Number(isScoped(b)) - Number(isScoped(a)) || a.priority - b.priority || a.id - b.id);
+  for (const rule of ordered) {
+    if (rule.keywords.length === 0) {
+      matches.push({ rule, keyword: null });
+      continue;
+    }
+    const keyword = rule.keywords.find((k) => k.trim() && normalized.includes(normalizeText(k.trim())));
+    if (keyword) matches.push({ rule, keyword: keyword.trim() });
+  }
+  return matches;
+}
+
 export function decideReply(
   rules: ReplyRule[],
   templates: TemplateLookup,
@@ -96,12 +118,7 @@ export function decideReply(
   text: string,
   mediaId: string | null = null,
 ): ReplyDecision | null {
-  const normalized = normalizeText(text);
-  const rule = [...rules]
-    .filter((r) => r.enabled && r.channels.includes(channel))
-    .filter((r) => !isScoped(r) || (channel === "comment" && mediaId !== null && r.mediaIds!.includes(mediaId)))
-    .sort((a, b) => Number(isScoped(b)) - Number(isScoped(a)) || a.priority - b.priority || a.id - b.id)
-    .find((r) => r.keywords.length === 0 || r.keywords.some((k) => k.trim() && normalized.includes(normalizeText(k.trim()))));
+  const rule = matchingRules(rules, channel, text, mediaId)[0]?.rule;
   if (!rule) return null;
   const message = renderTemplate(templateText(templates, rule.templateId, rule.template), username);
   const dmMessage = channel === "comment" ? renderTemplate(templateText(templates, rule.dmTemplateId, rule.dmTemplate), username) : "";

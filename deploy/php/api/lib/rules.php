@@ -139,6 +139,19 @@ function rule_is_scoped(array $rule): bool
  */
 function decide_reply(array $rules, array $templates, string $channel, string $username, string $text, ?string $mediaId = null): ?array
 {
+    $rule = matching_rules($rules, $channel, $text, $mediaId)[0]['rule'] ?? null;
+    if ($rule === null) return null;
+    $message = render_template(template_text($templates, $rule['templateId'], $rule['template']), $username);
+    $dmMessage = $channel === 'comment' ? render_template(template_text($templates, $rule['dmTemplateId'], $rule['dmTemplate']), $username) : '';
+    return ['rule' => $rule, 'message' => $message, 'dmMessage' => $dmMessage];
+}
+
+/**
+ * Every rule that would answer this text, in the order they are tried; only the first one is
+ * applied. 'keyword' is the keyword that matched, or null for a rule without keywords.
+ */
+function matching_rules(array $rules, string $channel, string $text, ?string $mediaId = null): array
+{
     $normalized = normalize_text($text);
     $candidates = array_values(array_filter($rules, function ($rule) use ($channel, $mediaId) {
         if (!$rule['enabled'] || !in_array($channel, $rule['channels'], true)) return false;
@@ -147,18 +160,21 @@ function decide_reply(array $rules, array $templates, string $channel, string $u
     usort($candidates, function ($a, $b) {
         return [(int) rule_is_scoped($b), $a['priority'], $a['id']] <=> [(int) rule_is_scoped($a), $b['priority'], $b['id']];
     });
+    $matches = [];
     foreach ($candidates as $rule) {
-        $match = !$rule['keywords'];
+        if (!$rule['keywords']) {
+            $matches[] = ['rule' => $rule, 'keyword' => null];
+            continue;
+        }
         foreach ($rule['keywords'] as $keyword) {
             $k = trim((string) $keyword);
-            if ($k !== '' && mb_strpos($normalized, normalize_text($k)) !== false) { $match = true; break; }
+            if ($k !== '' && mb_strpos($normalized, normalize_text($k)) !== false) {
+                $matches[] = ['rule' => $rule, 'keyword' => $k];
+                break;
+            }
         }
-        if (!$match) continue;
-        $message = render_template(template_text($templates, $rule['templateId'], $rule['template']), $username);
-        $dmMessage = $channel === 'comment' ? render_template(template_text($templates, $rule['dmTemplateId'], $rule['dmTemplate']), $username) : '';
-        return ['rule' => $rule, 'message' => $message, 'dmMessage' => $dmMessage];
     }
-    return null;
+    return $matches;
 }
 
 // --- templates ----------------------------------------------------------------------------------

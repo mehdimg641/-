@@ -23,6 +23,7 @@ import {
   sendReply,
 } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
+import { decideReply, matchingRules } from "./replyRules";
 import { getMetaApiHost, getWebhookSubscription, MetaApiError, subscribeWebhooks, testMetaConnection } from "./metaGraph";
 import { maskSecret, metaSetting, metaSettingSource, refreshMetaSettings, saveMetaSettings } from "./metaSettings";
 import { allowedAccountIds, isMetaWebhookConfigured } from "./metaWebhook";
@@ -107,6 +108,24 @@ const approvalsRouter = router({
   approve: adminProcedure
     .input(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() }))
     .mutation(async ({ input, ctx }) => guard(async () => sendReply(await getInboxStore(), input.id, ctx.user.id, input.text))),
+  /** Sends several drafts one after another; a failure doesn't stop the rest. */
+  approveMany: adminProcedure
+    .input(z.object({ items: z.array(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() })).min(1).max(100) }))
+    .mutation(async ({ input, ctx }) => {
+      const store = await getInboxStore();
+      let sent = 0;
+      const failed: Array<{ id: number; error: string }> = [];
+      for (const item of input.items) {
+        try {
+          const result = await sendReply(store, item.id, ctx.user.id, item.text);
+          if (result.ok) sent++;
+          else failed.push({ id: item.id, error: result.error });
+        } catch (error) {
+          failed.push({ id: item.id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      return { sent, failed };
+    }),
   reject: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input, ctx }) =>
     guard(async () => {
       await rejectReply(await getInboxStore(), input.id, ctx.user.id);
@@ -132,6 +151,20 @@ const rulesRouter = router({
       if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
       assertRuleReplies({ ...current, ...input.patch });
       return (await store.updateRule(input.id, input.patch))!;
+    }),
+  /** Which rules a sample message would trigger, in order, and the reply the first one drafts. */
+  test: adminProcedure
+    .input(z.object({ channel: z.enum(["comment", "dm"]), text: z.string().trim().min(1).max(1000), mediaId: z.string().trim().min(1).max(64).nullable() }))
+    .query(async ({ input }) => {
+      const store = await getInboxStore();
+      const [rules, templates] = await Promise.all([store.listRules(), store.listTemplates()]);
+      const matches = matchingRules(rules, input.channel, input.text, input.mediaId);
+      const decision = decideReply(rules, templates, input.channel, "", input.text, input.mediaId);
+      return {
+        matches: matches.map(({ rule, keyword }) => ({ id: rule.id, name: rule.name, priority: rule.priority, scoped: Boolean(rule.mediaIds?.length), keyword })),
+        message: decision?.message ?? "",
+        dmMessage: decision?.dmMessage ?? "",
+      };
     }),
   /** Drafts replies for messages that arrived before a matching rule existed. */
   applyToUnanswered: adminProcedure.mutation(async () => applyRulesToUnanswered(await getInboxStore())),

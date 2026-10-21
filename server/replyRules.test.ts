@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ReplyRule } from "../drizzle/schema";
-import { decideReply, DEFAULT_RULES, normalizeText, renderTemplate } from "./replyRules";
+import { decideReply, DEFAULT_RULES, matchingRules, normalizeText, renderTemplate } from "./replyRules";
 
 const rules: ReplyRule[] = DEFAULT_RULES.map((rule, i) => ({
   id: i + 1,
@@ -81,5 +81,23 @@ describe("templates", () => {
 
   it("normalizes Arabic letters", () => {
     expect(normalizeText("قيمت")).toBe("قیمت");
+  });
+});
+
+describe("matchingRules", () => {
+  const extra = (id: number, over: Partial<ReplyRule>): ReplyRule => ({ ...rules[0], id, name: `r${id}`, keywords: ["لیست"], channels: ["comment"], priority: 50, ...over });
+
+  it("lists every match in the order they are tried, with the keyword that matched", () => {
+    const all = [...rules, extra(90, { priority: 300 }), extra(91, { priority: 20, keywords: ["قیمت", "لیست"] }), extra(92, { mediaIds: ["p1"], priority: 900 })];
+    const onPost = matchingRules(all, "comment", "لیست قیمت تیرآهن؟", "p1");
+    expect(onPost[0].rule.id).toBe(92);
+    expect(onPost.map((m) => m.rule.id)).toEqual(expect.arrayContaining([91, 90]));
+    expect(onPost.find((m) => m.rule.id === 91)?.keyword).toBe("قیمت");
+    expect(matchingRules(all, "comment", "لیست", null).map((m) => m.rule.id)).not.toContain(92);
+    expect(matchingRules(all, "dm", "لیست", null).map((m) => m.rule.id)).not.toContain(90);
+  });
+
+  it("is empty when nothing matches", () => {
+    expect(matchingRules([extra(90, {})], "comment", "سلام", null)).toEqual([]);
   });
 });

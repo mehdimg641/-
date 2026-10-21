@@ -204,6 +204,28 @@ function procedures(): array
             $text = array_key_exists('text', $in) && $in['text'] !== null ? req_str($in, 'text', 1, 1000) : null;
             return send_reply(req_int($in, 'id'), $user['id'], $text);
         })],
+        // Sends several drafts one after another; a failure doesn't stop the rest.
+        'approvals.approveMany' => ['mutation', $admin(function ($in, $user) {
+            $items = $in['items'] ?? null;
+            if (!is_array($items) || !$items || count($items) > 100) throw new ApiError('BAD_REQUEST', 'بین ۱ تا ۱۰۰ مورد انتخاب کنید');
+            @set_time_limit(300);
+            $sent = 0;
+            $failed = [];
+            foreach ($items as $item) {
+                $item = in_obj($item);
+                $id = req_int($item, 'id');
+                $text = array_key_exists('text', $item) && $item['text'] !== null ? req_str($item, 'text', 1, 1000) : null;
+                try {
+                    $result = send_reply($id, $user['id'], $text);
+                    if ($result['ok']) $sent++;
+                    else $failed[] = ['id' => $id, 'error' => $result['error']];
+                } catch (Throwable $e) {
+                    $failed[] = ['id' => $id, 'error' => $e instanceof ApiError ? $e->getMessage() : 'خطای داخلی سرور'];
+                    if (!$e instanceof ApiError) error_log('[Sepand] approveMany ' . $id . ': ' . $e->getMessage());
+                }
+            }
+            return ['sent' => $sent, 'failed' => $failed];
+        })],
         'approvals.reject' => ['mutation', $admin(function ($in, $user) {
             reject_reply(req_int($in, 'id'), $user['id']);
             return ['success' => true];
@@ -222,6 +244,21 @@ function procedures(): array
             $patch = rule_input(in_obj($in['patch'] ?? []), true);
             assert_rule_replies(array_merge($current, $patch));
             return update_rule($id, $patch);
+        })],
+        // Which rules a sample message would trigger, in order, and the reply the first one drafts.
+        'rules.test' => ['query', $admin(function ($in) {
+            if (!in_array($in['channel'] ?? null, ['comment', 'dm'], true)) throw new ApiError('BAD_REQUEST', 'کانال نامعتبر است');
+            $text = req_str($in, 'text', 1, 1000);
+            $mediaId = ($in['mediaId'] ?? null) === null ? null : media_id_input($in);
+            $rules = list_rules();
+            $decision = decide_reply($rules, list_templates(), $in['channel'], '', $text, $mediaId);
+            return [
+                'matches' => array_map(function ($m) {
+                    return ['id' => $m['rule']['id'], 'name' => $m['rule']['name'], 'priority' => $m['rule']['priority'], 'scoped' => rule_is_scoped($m['rule']), 'keyword' => $m['keyword']];
+                }, matching_rules($rules, $in['channel'], $text, $mediaId)),
+                'message' => $decision['message'] ?? '',
+                'dmMessage' => $decision['dmMessage'] ?? '',
+            ];
         })],
         // Drafts replies for messages that arrived before a matching rule existed.
         'rules.applyToUnanswered' => ['mutation', $admin(function () { return apply_rules_to_unanswered(); })],
