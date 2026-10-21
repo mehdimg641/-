@@ -83,3 +83,21 @@ export function normalizeAccountIds(value: string) {
 export function toLatinDigits(value: string) {
   return value.replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0)).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660));
 }
+
+/** Instagram's limit for one comment reply or DM. */
+export const MAX_MESSAGE_LENGTH = 1000;
+
+/** A line holding only "---" splits a reply into separate messages, sent in order. */
+export function splitMessages(text: string) {
+  return text
+    .split(/^[ \t]*-{3,}[ \t]*$/m)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/** A private reply to a comment can only be one message, so its parts become paragraphs. */
+export const joinMessages = (text: string) => splitMessages(text).join("\n\n");
+
+export const messagesFit = (text: string) => splitMessages(text).every((part) => part.length <= MAX_MESSAGE_LENGTH);
+
+export const MESSAGES_TOO_LONG = "هر پیام حداکثر ۱۰۰۰ کاراکتر است؛ متن طولانی را با یک خط --- به چند پیام تقسیم کنید";

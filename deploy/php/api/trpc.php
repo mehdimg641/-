@@ -69,8 +69,14 @@ function rule_input(array $in, bool $partial): array
         if (!in_array($in['action'] ?? null, ['send', 'approval'], true)) throw new ApiError('BAD_REQUEST', 'اقدام نامعتبر است');
         $out['action'] = $in['action'];
     }
-    if (!$partial || array_key_exists('template', $in)) $out['template'] = req_str($in, 'template', 0, 1000);
-    if (!$partial || array_key_exists('dmTemplate', $in)) $out['dmTemplate'] = opt_str($in, 'dmTemplate', 1000);
+    if (!$partial || array_key_exists('template', $in)) $out['template'] = messages_input(req_str($in, 'template', 0, 4000));
+    if (!$partial || array_key_exists('dmTemplate', $in)) {
+        $out['dmTemplate'] = opt_str($in, 'dmTemplate', 4000);
+        // One private reply per comment: its parts are joined into a single message, so the whole must fit.
+        if ($out['dmTemplate'] !== null && mb_strlen(join_messages($out['dmTemplate'])) > MAX_MESSAGE_LENGTH) {
+            throw new ApiError('BAD_REQUEST', 'دایرکت به نویسندهٔ کامنت یک پیام است و حداکثر ۱۰۰۰ کاراکتر');
+        }
+    }
     foreach (['templateId', 'dmTemplateId'] as $key) {
         if (!$partial || array_key_exists($key, $in)) $out[$key] = ($in[$key] ?? null) === null ? null : req_int($in, $key);
     }
@@ -92,6 +98,13 @@ function rule_input(array $in, bool $partial): array
         $out['enabled'] = $in['enabled'];
     }
     return $out;
+}
+
+/** Text that may hold several "---"-separated messages; each must fit Instagram's limit. */
+function messages_input(string $text): string
+{
+    if (!messages_fit($text)) throw new ApiError('BAD_REQUEST', 'هر پیام حداکثر ۱۰۰۰ کاراکتر است؛ متن طولانی را با یک خط --- به چند پیام تقسیم کنید');
+    return $text;
 }
 
 /** Nullable trimmed string; empty becomes null. */
@@ -117,7 +130,7 @@ function template_input(array $in, bool $partial): array
     $out = [];
     if (!$partial || array_key_exists('title', $in)) $out['title'] = req_str($in, 'title', 1, 120);
     if (!$partial || array_key_exists('category', $in)) $out['category'] = req_str($in, 'category', 0, 60);
-    if (!$partial || array_key_exists('text', $in)) $out['text'] = req_str($in, 'text', 1, 1000);
+    if (!$partial || array_key_exists('text', $in)) $out['text'] = messages_input(req_str($in, 'text', 1, 4000));
     return $out;
 }
 
@@ -196,7 +209,7 @@ function procedures(): array
             return ['success' => true];
         })],
         'inbox.reply' => ['mutation', $admin(function ($in, $user) {
-            return send_manual_reply(req_int($in, 'eventId'), req_str($in, 'text', 1, 1000), $user['id']);
+            return send_manual_reply(req_int($in, 'eventId'), messages_input(req_str($in, 'text', 1, 4000)), $user['id']);
         })],
 
         'approvals.list' => ['query', $admin(function () { return list_approvals(); })],
@@ -235,7 +248,8 @@ function procedures(): array
         'rules.create' => ['mutation', $admin(function ($in) {
             $rule = rule_input($in, false);
             assert_rule_replies($rule);
-            return get_rule(insert_rule($rule));
+            $created = get_rule(insert_rule($rule));
+            return $created + ['redrafted' => redraft_pending()['updated']];
         })],
         'rules.update' => ['mutation', $admin(function ($in) {
             $id = req_int($in, 'id');
@@ -243,7 +257,9 @@ function procedures(): array
             if (!$current) throw new ApiError('NOT_FOUND', 'قانون پیدا نشد');
             $patch = rule_input(in_obj($in['patch'] ?? []), true);
             assert_rule_replies(array_merge($current, $patch));
-            return update_rule($id, $patch);
+            $rule = update_rule($id, $patch);
+            // Pending drafts follow the rule as it is now.
+            return $rule + ['redrafted' => redraft_pending()['updated']];
         })],
         // Which rules a sample message would trigger, in order, and the reply the first one drafts.
         'rules.test' => ['query', $admin(function ($in) {
@@ -264,7 +280,7 @@ function procedures(): array
         'rules.applyToUnanswered' => ['mutation', $admin(function () { return apply_rules_to_unanswered(); })],
         'rules.delete' => ['mutation', $admin(function ($in) {
             db()->prepare("DELETE FROM replyRules WHERE id = ?")->execute([req_int($in, 'id')]);
-            return ['success' => true];
+            return ['success' => true, 'redrafted' => redraft_pending()['updated']];
         })],
 
         'templates.list' => ['query', $admin(function () { return list_templates(); })],
@@ -282,7 +298,8 @@ function procedures(): array
             }
             $template = get_template($id);
             if (!$template) throw new ApiError('NOT_FOUND', 'قالب پیدا نشد');
-            return $template;
+            // Rules that use this template now draft the new text.
+            return $template + ['redrafted' => redraft_pending()['updated']];
         })],
         'templates.delete' => ['mutation', $admin(function ($in) {
             $id = req_int($in, 'id');

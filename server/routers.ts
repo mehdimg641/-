@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { normalizeAccountIds } from "@shared/inbox";
+import { joinMessages, MAX_MESSAGE_LENGTH, messagesFit, MESSAGES_TOO_LONG, normalizeAccountIds } from "@shared/inbox";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -10,6 +10,7 @@ import {
   applyRulesToUnanswered,
   buildThreads,
   importHistory,
+  redraftPending,
   importPostComments,
   listPosts,
   postComments,
@@ -34,9 +35,10 @@ const ruleInput = z.object({
   keywords: z.array(z.string().trim().min(1).max(60)).max(50),
   channels: z.array(z.enum(["comment", "dm"])).min(1),
   action: z.enum(["send", "approval"]),
-  template: z.string().trim().max(1000),
+  template: z.string().trim().max(4000).refine(messagesFit, MESSAGES_TOO_LONG),
   templateId: z.number().int().nullable(),
-  dmTemplate: z.string().trim().max(1000).nullable(),
+  // One private reply per comment: its parts are joined into a single message, so the whole must fit.
+  dmTemplate: z.string().trim().max(4000).refine((t) => joinMessages(t).length <= MAX_MESSAGE_LENGTH, "دایرکت به نویسندهٔ کامنت یک پیام است و حداکثر ۱۰۰۰ کاراکتر").nullable(),
   dmTemplateId: z.number().int().nullable(),
   mediaIds: z.array(z.string().trim().min(1).max(64)).max(200).nullable(),
   priority: z.number().int().min(0).max(10000),
@@ -53,7 +55,7 @@ function assertRuleReplies(rule: Partial<z.infer<typeof ruleInput>>) {
 const templateInput = z.object({
   title: z.string().trim().min(1).max(120),
   category: z.string().trim().max(60),
-  text: z.string().trim().min(1).max(1000),
+  text: z.string().trim().min(1).max(4000).refine(messagesFit, MESSAGES_TOO_LONG),
 });
 
 /** Turns state conflicts (already sent, not found) into a 409 the UI can show. */
@@ -99,7 +101,7 @@ const inboxRouter = router({
       return { success: true } as const;
     }),
   reply: adminProcedure
-    .input(z.object({ eventId: z.number().int(), text: z.string().trim().min(1).max(1000) }))
+    .input(z.object({ eventId: z.number().int(), text: z.string().trim().min(1).max(4000).refine(messagesFit, MESSAGES_TOO_LONG) }))
     .mutation(async ({ input, ctx }) => guard(async () => sendManualReply(await getInboxStore(), input.eventId, input.text, ctx.user.id))),
 });
 
@@ -141,7 +143,9 @@ const rulesRouter = router({
   }),
   create: adminProcedure.input(ruleInput).mutation(async ({ input }) => {
     assertRuleReplies(input);
-    return (await getInboxStore()).createRule(input);
+    const store = await getInboxStore();
+    const rule = await store.createRule(input);
+    return { ...rule, redrafted: (await redraftPending(store)).updated };
   }),
   update: adminProcedure
     .input(z.object({ id: z.number().int(), patch: ruleInput.partial() }))
@@ -150,7 +154,9 @@ const rulesRouter = router({
       const current = (await store.listRules()).find((r) => r.id === input.id);
       if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
       assertRuleReplies({ ...current, ...input.patch });
-      return (await store.updateRule(input.id, input.patch))!;
+      const rule = (await store.updateRule(input.id, input.patch))!;
+      // Pending drafts follow the rule as it is now.
+      return { ...rule, redrafted: (await redraftPending(store)).updated };
     }),
   /** Which rules a sample message would trigger, in order, and the reply the first one drafts. */
   test: adminProcedure
@@ -169,8 +175,9 @@ const rulesRouter = router({
   /** Drafts replies for messages that arrived before a matching rule existed. */
   applyToUnanswered: adminProcedure.mutation(async () => applyRulesToUnanswered(await getInboxStore())),
   delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
-    await (await getInboxStore()).deleteRule(input.id);
-    return { success: true } as const;
+    const store = await getInboxStore();
+    await store.deleteRule(input.id);
+    return { success: true as const, redrafted: (await redraftPending(store)).updated };
   }),
 });
 
@@ -178,9 +185,11 @@ const templatesRouter = router({
   list: adminProcedure.query(async () => (await getInboxStore()).listTemplates()),
   create: adminProcedure.input(templateInput).mutation(async ({ input }) => (await getInboxStore()).createTemplate(input)),
   update: adminProcedure.input(z.object({ id: z.number().int(), patch: templateInput.partial() })).mutation(async ({ input }) => {
-    const template = await (await getInboxStore()).updateTemplate(input.id, input.patch);
+    const store = await getInboxStore();
+    const template = await store.updateTemplate(input.id, input.patch);
     if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "قالب پیدا نشد" });
-    return template;
+    // Rules that use this template now draft the new text.
+    return { ...template, redrafted: (await redraftPending(store)).updated };
   }),
   delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
     const store = await getInboxStore();

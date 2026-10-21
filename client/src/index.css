@@ -356,3 +356,13 @@ a.profile-link { text-decoration: none; }
 .rule-card.editing { border-color: #e0b24a; box-shadow: 0 0 0 2px rgba(224, 178, 74, 0.25); }
 .builder-slot { scroll-margin-top: 80px; }
 .builder-slot.editing .builder-card { border-color: #e0b24a; box-shadow: 0 0 0 3px rgba(224, 178, 74, 0.2); }
+
+/* Several messages in one field */
+.multi-message { display: flex; flex-direction: column; gap: 8px; }
+.multi-message-part { display: flex; flex-direction: column; gap: 4px; }
+.multi-message-head { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #8a8475; }
+.multi-message-head .icon-button { width: 22px; height: 22px; }
+.multi-message-add { align-self: flex-start; }
+.preview-parts { display: flex; flex-direction: column; gap: 4px; }
+.template-text-field { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.composer-area .multi-message textarea { min-height: 70px; }

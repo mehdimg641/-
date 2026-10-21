@@ -63,12 +63,22 @@ function create_reply(int $eventId, ?int $ruleId, string $source, string $text, 
     return (int) db()->lastInsertId();
 }
 
+/** The drafts a decision calls for, in send order. */
+function draft_parts(string $kind, array $decision): array
+{
+    // Each "---" part is its own reply, drafted (and later sent) in order.
+    $parts = array_map(function ($text) { return ['channel' => 'reply', 'text' => $text]; }, split_messages($decision['message']));
+    // Instagram allows one private reply per comment, so its parts go out as one message.
+    $dm = $kind === 'comment' ? join_messages($decision['dmMessage']) : '';
+    if ($dm !== '') $parts[] = ['channel' => 'private', 'text' => $dm];
+    return $parts;
+}
+
 /** The drafts a rule decision calls for: a reply in place and, for comments, a private DM. */
 function create_drafts(int $eventId, string $kind, array $decision): array
 {
     $ids = [];
-    if ($decision['message'] !== '') $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $decision['message']);
-    if ($kind === 'comment' && $decision['dmMessage'] !== '') $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $decision['dmMessage'], null, 'private');
+    foreach (draft_parts($kind, $decision) as $part) $ids[] = create_reply($eventId, $decision['rule']['id'], 'rule', $part['text'], null, $part['channel']);
     return $ids;
 }
 
@@ -110,6 +120,44 @@ function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = 
         if ($autoSend && $decision['rule']['action'] === 'send') $result['toSend'] = array_merge($result['toSend'], $ids);
     }
     return $result;
+}
+
+/** Messages this recent are re-checked when rules change; older ones need "apply to unanswered". */
+const REDRAFT_WINDOW_DAYS = 7;
+
+/**
+ * Brings the approval queue in line with the current rules and templates: for recent messages
+ * that only have pending rule drafts (or nothing yet), drafts the rule now calls for. Messages
+ * with a sent, failed, manual or rejected reply are left alone. Never sends anything.
+ */
+function redraft_pending(): array
+{
+    $rules = list_rules();
+    $templates = list_templates();
+    $pdo = db();
+    // The session runs in UTC (bootstrap), like the stored timestamps.
+    $events = array_map('event_row', $pdo->query("SELECT * FROM igEvents WHERE createdAt >= NOW() - INTERVAL " . REDRAFT_WINDOW_DAYS . " DAY ORDER BY id LIMIT " . THREAD_EVENT_LIMIT)->fetchAll());
+    $byEvent = [];
+    foreach (replies_for_events(array_column($events, 'id')) as $reply) $byEvent[$reply['eventId']][] = $reply;
+    $updated = 0;
+    foreach ($events as $event) {
+        $own = $byEvent[$event['id']] ?? [];
+        foreach ($own as $reply) if ($reply['status'] !== 'pending' || $reply['source'] !== 'rule') continue 2;
+        $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
+        $ruleId = $decision ? $decision['rule']['id'] : null;
+        $wanted = $decision ? draft_parts($event['kind'], $decision) : [];
+        $current = array_map(function ($r) { return ['channel' => $r['channel'], 'text' => $r['text']]; }, $own);
+        $sameRule = $event['ruleId'] === $ruleId && !array_filter($own, function ($r) use ($ruleId) { return $r['ruleId'] !== $ruleId; });
+        if ($sameRule && $current === $wanted) continue;
+        if ($own) {
+            $ids = array_column($own, 'id');
+            $pdo->prepare("DELETE FROM replies WHERE status = 'pending' AND id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")->execute($ids);
+        }
+        $pdo->prepare("UPDATE igEvents SET ruleId = ? WHERE id = ?")->execute([$ruleId, $event['id']]);
+        if ($decision) create_drafts($event['id'], $event['kind'], $decision);
+        $updated++;
+    }
+    return ['updated' => $updated];
 }
 
 /** Drafts replies for events that never got one (e.g. they arrived before the rule). Never auto-sends. */
@@ -160,7 +208,13 @@ function send_manual_reply(int $eventId, string $text, int $operatorId): array
 {
     $event = get_event($eventId);
     if (!$event) throw new ApiError('CONFLICT', 'پیام اصلی پیدا نشد');
-    $result = send_reply(create_reply($eventId, null, 'manual', $text, $operatorId), $operatorId);
+    // "---" lines split the text into several messages (several replies under a comment, or
+    // several DMs), sent in order; a failure stops the rest so they never arrive out of order.
+    $result = ['ok' => false, 'error' => 'متن پاسخ خالی است'];
+    foreach (split_messages($text) as $part) {
+        $result = send_reply(create_reply($eventId, null, 'manual', $part, $operatorId), $operatorId);
+        if (!$result['ok']) break;
+    }
     if ($result['ok']) {
         // The operator answered this conversation directly; its in-place rule drafts are now stale.
         // Private-DM drafts for comments are a separate action and stay in the queue.

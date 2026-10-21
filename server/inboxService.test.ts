@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyRulesToUnanswered, buildThreads, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, rejectReply, sendManualReply, sendReply } from "./inboxService";
+import { applyRulesToUnanswered, buildThreads, importHistory, importPostComments, ingestEvents, listApprovals, listPosts, postComments, redraftPending, rejectReply, sendManualReply, sendReply } from "./inboxService";
 import { MemoryInboxStore } from "./inboxStore";
 import type { IncomingEvent } from "./metaWebhook";
 
@@ -218,5 +218,81 @@ describe("importHistory", () => {
       ]),
     );
     expect(await store.listReplies({})).toEqual([]);
+  });
+});
+
+describe("several messages per reply", () => {
+  const rule = (template: string, dmTemplate: string | null = null) => ({
+    name: "لیست", keywords: ["لیست"], channels: ["comment", "dm"] as ("comment" | "dm")[], action: "approval" as const,
+    template, templateId: null, dmTemplate, dmTemplateId: null, mediaIds: null, priority: 1, enabled: true,
+  });
+
+  it("drafts one reply per --- part and keeps the private DM as one message", async () => {
+    const store = new MemoryInboxStore();
+    await store.createRule(rule("سلام {{username}}\n---\nلیست قیمت امروز\n---\n", "بخش اول\n---\nبخش دوم"));
+    await ingestEvents(store, [comment("c1", "لیست؟")]);
+    const drafts = await store.listReplies({ status: "pending" });
+    expect(drafts.map((d) => [d.channel, d.text])).toEqual([
+      ["reply", "سلام hossein.rz"],
+      ["reply", "لیست قیمت امروز"],
+      ["private", "بخش اول\n\nبخش دوم"],
+    ]);
+  });
+
+  it("keeps the separators when a DM has no username", async () => {
+    const store = new MemoryInboxStore();
+    await store.createRule(rule("سلام {{username}}، خوش آمدید\n---\nلیست پیوست است"));
+    await ingestEvents(store, [dm("m1", "لیست")]);
+    expect((await store.listReplies({ status: "pending" })).map((d) => d.text)).toEqual(["سلام، خوش آمدید", "لیست پیوست است"]);
+  });
+
+  it("sends a manual reply as several messages in order and stops at the first failure", async () => {
+    const store = new MemoryInboxStore();
+    await ingestEvents(store, [dm("m1", "سلام")]);
+    const [event] = await store.listEvents(1);
+    expect((await sendManualReply(store, event.id, "اول\n---\nدوم", 1)).ok).toBe(true);
+    expect(fetchMock.mock.calls.map((c) => JSON.parse(c[1].body).message.text)).toEqual(["اول", "دوم"]);
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "outside window" } }), { status: 400 }));
+    expect((await sendManualReply(store, event.id, "الف\n---\nب", 1)).ok).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("redraftPending", () => {
+  // Only the rules a test creates; the store seeds the defaults otherwise.
+  async function emptyStore() {
+    const store = new MemoryInboxStore();
+    for (const r of await store.listRules()) await store.deleteRule(r.id);
+    return store;
+  }
+  const base = { name: "لیست", keywords: ["لیست"], channels: ["comment"] as ("comment" | "dm")[], action: "approval" as const, templateId: null, dmTemplate: null, dmTemplateId: null, mediaIds: null, priority: 1, enabled: true };
+
+  it("rebuilds pending drafts after a rule change and leaves answered messages alone", async () => {
+    const store = await emptyStore();
+    const rule = await store.createRule({ ...base, template: "نسخهٔ اول" });
+    await ingestEvents(store, [comment("c1", "لیست؟"), { ...comment("c2", "لیست لطفا"), senderId: "888" }]);
+    const [first] = await store.listReplies({ status: "pending" });
+    await sendReply(store, first.id, 1);
+
+    await store.updateRule(rule.id, { template: "نسخهٔ دوم\n---\nبخش دوم" });
+    expect((await redraftPending(store)).updated).toBe(1);
+    expect((await store.listReplies({ status: "pending" })).map((r) => r.text)).toEqual(["نسخهٔ دوم", "بخش دوم"]);
+    expect((await store.listReplies({ status: "sent" })).map((r) => r.text)).toEqual(["نسخهٔ اول"]);
+    // Nothing changed since: no churn.
+    expect((await redraftPending(store)).updated).toBe(0);
+
+    await store.updateRule(rule.id, { enabled: false });
+    await redraftPending(store);
+    expect(await store.listReplies({ status: "pending" })).toEqual([]);
+  });
+
+  it("drafts recent messages a new rule now matches, but not old ones", async () => {
+    const store = await emptyStore();
+    await ingestEvents(store, [comment("c1", "سلام لیست"), { ...comment("c2", "لیست قدیمی"), senderId: "777", at: new Date(Date.now() - 10 * 24 * 3600 * 1000) }]);
+    await store.createRule({ ...base, template: "لیست قیمت" });
+    expect((await redraftPending(store)).updated).toBe(1);
+    expect((await store.listReplies({ status: "pending" })).map((r) => r.text)).toEqual(["لیست قیمت"]);
   });
 });

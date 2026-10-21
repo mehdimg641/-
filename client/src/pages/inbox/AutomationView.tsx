@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, Check, CheckCheck, CheckCircle2, ChevronLeft, FlaskConical, ImageIcon, Mail, MessageSquareText, Pencil, Plus, RefreshCw, Send, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import type { ApprovalItem } from "@shared/inbox";
+import { joinMessages, splitMessages } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
+import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
 import { errorMessage, faNum, relativeTime, StatusPill, Switch } from "./ui";
 
@@ -117,8 +119,13 @@ function textSummary(templates: Template[], id: number | null, inline: string | 
 
 function RuleCard({ rule, editing, templates, posts, onEdit }: { rule: Rule; editing: boolean; templates: Template[]; posts: Post[]; onEdit: () => void }) {
   const utils = trpc.useUtils();
-  const update = trpc.rules.update.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
-  const remove = trpc.rules.delete.useMutation({ onSuccess: () => utils.rules.list.invalidate() });
+  const changed = () => {
+    utils.rules.list.invalidate();
+    utils.approvals.list.invalidate();
+    utils.inbox.invalidate();
+  };
+  const update = trpc.rules.update.useMutation({ onSuccess: changed });
+  const remove = trpc.rules.delete.useMutation({ onSuccess: changed });
   const tone = rule.action === "approval" ? "gold" : "blue";
   const reply = textSummary(templates, rule.templateId, rule.template);
   const dm = textSummary(templates, rule.dmTemplateId, rule.dmTemplate);
@@ -150,19 +157,22 @@ function RuleCard({ rule, editing, templates, posts, onEdit }: { rule: Rule; edi
 const splitKeywords = (value: string) => value.split(/[,،\n]/).map((k) => k.trim()).filter(Boolean);
 
 /** Text written here, or a saved template from the library. */
-function TextSource({ label, hint, value, templateId, templates, allowNone, onChange }: {
+function TextSource({ label, hint, value, templateId, templates, allowNone, single, onChange }: {
   label: string;
   hint?: string;
   value: string;
   templateId: number | null;
   templates: Template[];
   allowNone?: boolean;
+  /** Instagram allows one message here; extra boxes become paragraphs of it. */
+  single?: boolean;
   onChange: (next: { value: string; templateId: number | null }) => void;
 }) {
   const mode = templateId != null ? "template" : allowNone && !value ? "none" : "text";
   const [forcedText, setForcedText] = useState(false);
   const shown = forcedText && mode === "none" ? "text" : mode;
-  const preview = (shown === "template" ? templates.find((t) => t.id === templateId)?.text : value)?.replaceAll("{{username}}", "hossein.rz");
+  const source = (shown === "template" ? templates.find((t) => t.id === templateId)?.text : value)?.replaceAll("{{username}}", "hossein.rz") ?? "";
+  const previewParts = single ? [joinMessages(source)].filter(Boolean) : splitMessages(source);
   return (
     <div className="text-source">
       <div className="text-source-head">
@@ -173,14 +183,29 @@ function TextSource({ label, hint, value, templateId, templates, allowNone, onCh
           <button type="button" className={shown === "template" ? "active" : ""} disabled={!templates.length} onClick={() => onChange({ value, templateId: templateId ?? templates[0]?.id ?? null })}>از قالب‌ها</button>
         </div>
       </div>
-      {shown === "text" && <textarea value={value} onChange={(e) => onChange({ value: e.target.value, templateId: null })} placeholder="سلام {{username}}، ..." />}
+      {shown === "text" && (
+        <MultiMessageEditor
+          value={value}
+          single={single}
+          addLabel={single ? "افزودن بند" : "افزودن پیام بعدی"}
+          onChange={(next) => onChange({ value: next, templateId: null })}
+          placeholder="سلام {{username}}، ..."
+        />
+      )}
       {shown === "template" && (
         <select value={templateId ?? ""} onChange={(e) => onChange({ value, templateId: Number(e.target.value) })}>
           {templates.map((t) => <option key={t.id} value={t.id}>{t.title}{t.category ? ` (${t.category})` : ""}</option>)}
         </select>
       )}
       {hint && <span className="field-tip">{hint}</span>}
-      {shown !== "none" && preview && <div className="builder-preview"><Sparkles size={14} /><span>پیش‌نمایش: {preview}</span></div>}
+      {shown !== "none" && previewParts.length > 0 && (
+        <div className="builder-preview">
+          <Sparkles size={14} />
+          <div className="preview-parts">
+            {previewParts.map((part, i) => <span key={i}>{previewParts.length > 1 ? `پیام ${faNum(i + 1)}: ` : "پیش‌نمایش: "}{part}</span>)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -206,6 +231,9 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
   const onSuccess = () => {
     utils.rules.list.invalidate();
     utils.posts.list.invalidate();
+    // Pending drafts were rebuilt for the changed rule.
+    utils.approvals.list.invalidate();
+    utils.inbox.invalidate();
     onDone();
   };
   const onError = (e: unknown) => setError(errorMessage(e));
@@ -286,7 +314,7 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
 
       <TextSource
         label={forComments ? (channels.length === 2 && !scoped ? "پاسخ (زیر کامنت / در دایرکت)" : "پاسخ زیر کامنت") : "پاسخ دایرکت"}
-        hint={'{{username}} = نام اکانت مخاطب (در دایرکت‌ها خالی می‌ماند)'}
+        hint={'هر کادر یک پیام جداست و به ترتیب ارسال می‌شود · {{username}} = نام اکانت مخاطب (در دایرکت‌ها خالی می‌ماند)'}
         value={reply.value}
         templateId={reply.templateId}
         templates={templates}
@@ -296,7 +324,8 @@ export function RuleBuilder({ rule, templates, posts, presetMediaIds, onDone }: 
       {forComments && (
         <TextSource
           label="دایرکت به نویسندهٔ کامنت"
-          hint="اینستاگرام اجازهٔ یک دایرکت برای هر کامنت را تا ۷ روز بعد از آن می‌دهد."
+          single
+          hint="اینستاگرام برای هر کامنت فقط یک دایرکت (تا ۷ روز بعد) اجازه می‌دهد؛ بندها در همان یک پیام می‌روند."
           value={dm.value}
           templateId={dm.templateId}
           templates={templates}
@@ -362,8 +391,10 @@ function RuleTester({ posts }: { posts: Post[] }) {
           {data.matches.length > 1 && (
             <span className="field-tip">{faNum(data.matches.length)} قانون با این متن جور شدند ولی فقط اولی اعمال می‌شود. برای اینکه قانون دیگری برنده شود، عدد «اولویت» آن را کوچک‌تر کنید یا کلمه‌های قانون‌های دیگر را دقیق‌تر کنید.</span>
           )}
-          {data.message ? <div className="tester-reply"><MessageSquareText size={13} /> {channel === "dm" ? "پاسخ دایرکت" : "پاسخ زیر کامنت"}: <p>{data.message}</p></div> : null}
-          {data.dmMessage ? <div className="tester-reply"><Mail size={13} /> دایرکت به نویسندهٔ کامنت: <p>{data.dmMessage}</p></div> : null}
+          {splitMessages(data.message).map((part, i, all) => (
+            <div className="tester-reply" key={`m${i}`}><MessageSquareText size={13} /> {channel === "dm" ? "پاسخ دایرکت" : "پاسخ زیر کامنت"}{all.length > 1 ? ` ${faNum(i + 1)} از ${faNum(all.length)}` : ""}: <p>{part}</p></div>
+          ))}
+          {data.dmMessage ? <div className="tester-reply"><Mail size={13} /> دایرکت به نویسندهٔ کامنت: <p>{joinMessages(data.dmMessage)}</p></div> : null}
           {!data.message && !data.dmMessage && (
             <div className="settings-warning"><AlertCircle size={16} /><span>قانون «{winner.name}» برنده می‌شود ولی متن پاسخی ندارد (قالبش خالی است یا برای این کانال متنی تعریف نشده)، پس پیش‌نویسی ساخته نمی‌شود. قانون را ویرایش کنید.</span></div>
           )}

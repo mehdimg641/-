@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertCircle, ArrowUpLeft, Check, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
 import { errorMessage, StatusPill } from "./ui";
 
@@ -54,7 +55,7 @@ function TemplateCard({ template, tone, onEdit, onUse }: { template: Template; t
         </span>
       </div>
       <h3>{template.title}</h3>
-      <p>{template.text}</p>
+      <p>{template.text.split(/\n[ \t]*-{3,}[ \t]*\n/).join("  ·  ")}</p>
       {error && <span className="error-text">{error}</span>}
       <div className="template-card-bottom">
         <span className="field-tip">{"{{username}}"} با نام مخاطب جایگزین می‌شود</span>
@@ -72,6 +73,8 @@ function TemplateEditor({ template, categories, onDone }: { template: Template |
   const [error, setError] = useState("");
   const onSuccess = () => {
     utils.templates.list.invalidate();
+    // Drafts of rules that use this template now carry the new text.
+    utils.approvals.list.invalidate();
     onDone();
   };
   const onError = (e: unknown) => setError(errorMessage(e));
@@ -91,7 +94,10 @@ function TemplateEditor({ template, categories, onDone }: { template: Template |
         <label>دسته (اختیاری)<input value={category} list="template-categories" onChange={(e) => setCategory(e.target.value)} placeholder="فروش، کامنت، ..." /></label>
         <datalist id="template-categories">{categories.map((c) => <option key={c} value={c} />)}</datalist>
       </div>
-      <label>متن <span className="field-tip">{"{{username}}"} = نام اکانت مخاطب</span><textarea value={text} onChange={(e) => setText(e.target.value)} /></label>
+      <div className="template-text-field">
+        <b>متن</b> <span className="field-tip">هر کادر یک پیام جداست و به ترتیب ارسال می‌شود · {"{{username}}"} = نام اکانت مخاطب</span>
+        <MultiMessageEditor value={text} onChange={setText} />
+      </div>
       {error && <div className="settings-warning"><AlertCircle size={16} /><span>{error}</span></div>}
       <div className="builder-buttons">
         <button className="primary-button" disabled={!title.trim() || !text.trim() || create.isPending || update.isPending} onClick={save}><Check size={15} /> ذخیره قالب</button>

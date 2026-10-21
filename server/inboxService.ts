@@ -1,5 +1,5 @@
 import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
-import { channelOf, type ApprovalItem, type InboxThread } from "@shared/inbox";
+import { channelOf, joinMessages, splitMessages, type ApprovalItem, type InboxThread } from "@shared/inbox";
 import type { InboxStore } from "./inboxStore";
 import {
   getWebhookSubscription,
@@ -25,13 +25,22 @@ export function isAutoReplyEnabled() {
 }
 
 /** Creates the drafts a rule decision calls for: a reply in place and, for comments, a private DM. */
-async function createDrafts(store: InboxStore, event: IgEvent, decision: NonNullable<ReturnType<typeof decideReply>>) {
+type Decision = NonNullable<ReturnType<typeof decideReply>>;
+
+/** The drafts a decision calls for, in send order. */
+function draftParts(event: Pick<IgEvent, "kind">, decision: Decision) {
+  // Each "---" part is its own reply, drafted (and later sent) in order.
+  const parts: Array<{ channel: "reply" | "private"; text: string }> = splitMessages(decision.message).map((text) => ({ channel: "reply", text }));
+  // Instagram allows one private reply per comment, so its parts go out as one message.
+  const dm = event.kind === "comment" ? joinMessages(decision.dmMessage) : "";
+  if (dm) parts.push({ channel: "private", text: dm });
+  return parts;
+}
+
+async function createDrafts(store: InboxStore, event: IgEvent, decision: Decision) {
   const ids: number[] = [];
-  if (decision.message) {
-    ids.push((await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: "reply", text: decision.message, status: "pending" })).id);
-  }
-  if (event.kind === "comment" && decision.dmMessage) {
-    ids.push((await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: "private", text: decision.dmMessage, status: "pending" })).id);
+  for (const part of draftParts(event, decision)) {
+    ids.push((await store.createReply({ eventId: event.id, ruleId: decision.rule.id, source: "rule", channel: part.channel, text: part.text, status: "pending" })).id);
   }
   return ids;
 }
@@ -66,6 +75,37 @@ export async function ingestEvents(store: InboxStore, events: IncomingEvent[], o
     if (autoSend && decision.rule.action === "send") toSend.push(...ids);
   }
   return { stored, duplicates, toSend };
+}
+
+/** Messages this recent are re-checked when rules change; older ones need "apply to unanswered". */
+const REDRAFT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Brings the approval queue in line with the current rules and templates: for recent messages
+ * that only have pending rule drafts (or nothing yet), drafts the rule now calls for. Messages
+ * with a sent, failed, manual or rejected reply are left alone. Never sends anything.
+ */
+export async function redraftPending(store: InboxStore, now = new Date()) {
+  const [events, rules, templates] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules(), store.listTemplates()]);
+  const recent = events.filter((e) => now.getTime() - e.createdAt.getTime() <= REDRAFT_WINDOW_MS);
+  const replies = await store.listReplies({ eventIds: recent.map((e) => e.id) });
+  let updated = 0;
+  for (const event of recent) {
+    const own = replies.filter((r) => r.eventId === event.id);
+    if (own.some((r) => r.status !== "pending" || r.source !== "rule")) continue;
+    const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
+    const wanted = decision ? draftParts(event, decision) : [];
+    const current = own.map((r) => ({ channel: r.channel, text: r.text, ruleId: r.ruleId }));
+    const same =
+      current.length === wanted.length &&
+      current.every((r, i) => r.channel === wanted[i].channel && r.text === wanted[i].text && r.ruleId === (decision?.rule.id ?? null));
+    if (same && event.ruleId === (decision?.rule.id ?? null)) continue;
+    await store.deletePendingReplies(own.map((r) => r.id));
+    await store.setEventRule(event.id, decision?.rule.id ?? null);
+    if (decision) await createDrafts(store, event, decision);
+    updated++;
+  }
+  return { updated };
 }
 
 /**
@@ -118,8 +158,14 @@ export async function rejectReply(store: InboxStore, replyId: number, operatorId
 export async function sendManualReply(store: InboxStore, eventId: number, text: string, operatorId: number) {
   const event = await store.getEvent(eventId);
   if (!event) throw new ReplyStateError("پیام اصلی پیدا نشد");
-  const reply = await store.createReply({ eventId, source: "manual", text, status: "pending", decidedBy: operatorId });
-  const result = await sendReply(store, reply.id, operatorId);
+  // "---" lines split the text into several messages (several replies under a comment, or
+  // several DMs), sent in order; a failure stops the rest so they never arrive out of order.
+  let result: Awaited<ReturnType<typeof sendReply>> = { ok: false, error: "متن پاسخ خالی است" };
+  for (const part of splitMessages(text)) {
+    const reply = await store.createReply({ eventId, source: "manual", text: part, status: "pending", decidedBy: operatorId });
+    result = await sendReply(store, reply.id, operatorId);
+    if (!result.ok) break;
+  }
   if (result.ok) {
     // The operator answered this conversation directly; its in-place rule drafts are now stale.
     // Private-DM drafts for comments are a separate action and stay in the queue.

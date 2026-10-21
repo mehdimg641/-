@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { filterInboxThreads, type ApprovalItem, type InboxChannel, type InboxThread } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
+import { MultiMessageEditor } from "./MultiMessageEditor";
 import type { RouterOutputs } from "./types";
 import { clock, errorMessage, faNum, IconButton, relativeTime, StatusPill } from "./ui";
 
@@ -207,9 +208,9 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
                   <span className="composer-label"><Reply size={15} /> پاسخ به {selectedThread.channel === "DM" ? "دایرکت" : "کامنت"}</span>
                   {pendingDraft && <button className="suggest-button" onClick={() => setComposer(pendingDraft.draft)}><Sparkles size={14} /> بارگذاری پیش‌نویس</button>}
                 </div>
-                <textarea
+                <MultiMessageEditor
                   value={composer}
-                  onChange={(event) => setComposer(event.target.value)}
+                  onChange={setComposer}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                       event.preventDefault();
@@ -219,7 +220,7 @@ export function InboxView({ threads, approvals, loading, autoReply, composer, se
                   placeholder="پاسخ خود را بنویسید..."
                 />
                 <div className="composer-bottom">
-                  <span className="composer-hint">Enter برای ارسال · Shift + Enter برای خط جدید{selectedThread.kind === "dm" ? " · دایرکت فقط تا ۲۴ ساعت پس از آخرین پیام مشتری" : ""}</span>
+                  <span className="composer-hint">Enter برای ارسال · Shift + Enter برای خط جدید · «افزودن پیام بعدی» = چند پیام پشت سر هم{selectedThread.kind === "dm" ? " · دایرکت فقط تا ۲۴ ساعت پس از آخرین پیام مشتری" : ""}</span>
                   <button className="send-button" onClick={sendReply} disabled={!composer.trim() || reply.isPending}><Send size={15} /> {reply.isPending ? "در حال ارسال..." : "ارسال پاسخ"}</button>
                 </div>
                 {notice && <div className={`sent-notice ${notice.ok ? "" : "error-notice"}`}>{notice.ok ? <Check size={14} /> : <AlertCircle size={14} />} {notice.text}</div>}

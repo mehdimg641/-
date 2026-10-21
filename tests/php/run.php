@@ -42,6 +42,10 @@ check('other post → general rule', decide_reply($withPost, $templates, 'commen
 check('dm channel ignores scoped', decide_reply([$scoped], $templates, 'dm', 'ali', 'قیمت؟', '1789'), null);
 check('no dm for dm events', decide_reply($rules, [], 'dm', '', 'قیمت؟')['dmMessage'], '');
 check('missing template → empty', decide_reply([['templateId' => 1234] + $scoped], $templates, 'comment', '', 'قیمت', '1789')['message'], '');
+check('split messages', split_messages("اول\n---\n دوم \n-----\n\n---\n"), ['اول', 'دوم']);
+check('join messages', join_messages("الف\n---\nب"), "الف\n\nب");
+check('separators survive empty username', split_messages(render_template("سلام {{username}}، خوش آمدید\n---\nلیست", '')), ['سلام، خوش آمدید', 'لیست']);
+check('message length', messages_fit(str_repeat('a', 1000) . "\n---\n" . str_repeat('b', 1000)) && !messages_fit(str_repeat('a', 1001)), true);
 check('empty username tidy', render_template('سلام {{username}}، لطفاً دایرکت کنید.', ''), 'سلام، لطفاً دایرکت کنید.');
 check('arabic letters', normalize_text('قيمت'), 'قیمت');
 

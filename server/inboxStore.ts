@@ -31,6 +31,7 @@ export interface InboxStore {
   getEvent(id: number): Promise<IgEvent | undefined>;
   listEvents(limit: number): Promise<IgEvent[]>;
   markRead(kind: IgEvent["kind"], senderId: string): Promise<void>;
+  setEventRule(id: number, ruleId: number | null): Promise<void>;
   listRules(): Promise<ReplyRule[]>;
   createRule(rule: RuleInput): Promise<ReplyRule>;
   updateRule(id: number, patch: Partial<RuleInput>): Promise<ReplyRule | undefined>;
@@ -38,6 +39,8 @@ export interface InboxStore {
   createReply(reply: Omit<InsertReply, "id" | "createdAt">): Promise<Reply>;
   getReply(id: number): Promise<Reply | undefined>;
   updateReply(id: number, patch: ReplyPatch): Promise<void>;
+  /** Drops drafts that are still pending (others are kept), so a rule change can rebuild them. */
+  deletePendingReplies(ids: number[]): Promise<void>;
   /** Atomically moves a reply to "sending" if it is in one of `from`; false means someone else got it. */
   claimReply(id: number, from: Reply["status"][]): Promise<boolean>;
   listReplies(filter: { status?: Reply["status"]; eventIds?: number[] }): Promise<Reply[]>;
@@ -118,6 +121,11 @@ export class MemoryInboxStore implements InboxStore {
     for (const e of this.events) if (e.kind === kind && e.senderId === senderId) e.isRead = true;
   }
 
+  async setEventRule(id: number, ruleId: number | null) {
+    const event = this.events.find((e) => e.id === id);
+    if (event) event.ruleId = ruleId;
+  }
+
   async listRules() {
     return [...this.rules];
   }
@@ -164,6 +172,10 @@ export class MemoryInboxStore implements InboxStore {
   async updateReply(id: number, patch: ReplyPatch) {
     const reply = this.replies.find((r) => r.id === id);
     if (reply) Object.assign(reply, patch);
+  }
+
+  async deletePendingReplies(ids: number[]) {
+    this.replies = this.replies.filter((r) => !(ids.includes(r.id) && r.status === "pending"));
   }
 
   async claimReply(id: number, from: Reply["status"][]) {
@@ -286,6 +298,10 @@ export class DrizzleInboxStore implements InboxStore {
       .where(and(eq(igEvents.kind, kind), eq(igEvents.senderId, senderId)));
   }
 
+  async setEventRule(id: number, ruleId: number | null) {
+    await this.db.update(igEvents).set({ ruleId }).where(eq(igEvents.id, id));
+  }
+
   async listRules() {
     const rows = await this.db.select().from(replyRules);
     if (rows.length > 0 || this.seeded) return rows.map(normalizeRule);
@@ -328,6 +344,11 @@ export class DrizzleInboxStore implements InboxStore {
 
   async updateReply(id: number, patch: ReplyPatch) {
     await this.db.update(replies).set(patch).where(eq(replies.id, id));
+  }
+
+  async deletePendingReplies(ids: number[]) {
+    if (!ids.length) return;
+    await this.db.delete(replies).where(and(inArray(replies.id, ids), eq(replies.status, "pending")));
   }
 
   async claimReply(id: number, from: Reply["status"][]) {

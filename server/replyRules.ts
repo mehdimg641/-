@@ -64,7 +64,8 @@ export function normalizeText(text: string) {
 export function renderTemplate(template: string, username: string) {
   const rendered = template.replaceAll("{{username}}", username);
   // Without a username, "سلام ، ..." would read oddly; collapse the empty slot.
-  return username ? rendered : rendered.replace(/\s+،/g, "،").replace(/\s{2,}/g, " ").trim();
+  // Only spaces and tabs: line breaks carry paragraphs and the "---" message separators.
+  return username ? rendered : rendered.replace(/[ \t]+،/g, "،").replace(/[ \t]{2,}/g, " ").trim();
 }
 
 export type ReplyDecision = {
