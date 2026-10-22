@@ -43,6 +43,7 @@ function historyMessage(r: HistoryResult) {
   }
   else parts.push(`${faNum(r.dms.fetched)} دایرکت خوانده شد و ${faNum(r.dms.imported)} دایرکت تازه وارد شد`);
   let text = parts.join("؛ ") + ".";
+  if (c.more > 0) text += ` ${faNum(c.more)} پست کامنت‌های بیشتری دارد؛ برای دریافت همه، در صفحهٔ «پست‌ها» آن پست را باز کنید و «دریافت همهٔ کامنت‌ها» را بزنید.`;
   if (c.hidden > 0) {
     text += ` اینستاگرام ${faNum(c.hidden)} کامنت را گزارش کرد ولی متنشان را نداد. توکن مشکلی ندارد (درخواست بدون خطا انجام شد)؛ برنامهٔ Meta در حالت Development است و Meta پیام کسانی را که در App roles نیستند پنهان می‌کند. بعد از Live شدن برنامه، همین دکمه را دوباره بزنید.`;
   }

@@ -34,6 +34,7 @@ export interface InboxStore {
   markRead(kind: IgEvent["kind"], senderId: string): Promise<void>;
   setEventRule(id: number, ruleId: number | null): Promise<void>;
   setEventFlags(id: number, flags: EventFlags): Promise<void>;
+  findEvent(accountId: string, kind: IgEvent["kind"], externalId: string): Promise<IgEvent | undefined>;
   /** The reply Instagram knows by this id (our sent DM's message_id), for customer reactions. */
   findReplyByExternalId(externalId: string): Promise<Reply | undefined>;
   listRules(): Promise<ReplyRule[]>;
@@ -141,6 +142,10 @@ export class MemoryInboxStore implements InboxStore {
 
   async findReplyByExternalId(externalId: string) {
     return this.replies.find((r) => r.externalId === externalId);
+  }
+
+  async findEvent(accountId: string, kind: IgEvent["kind"], externalId: string) {
+    return this.events.find((e) => e.accountId === accountId && e.kind === kind && e.externalId === externalId);
   }
 
   async listRules() {
@@ -330,6 +335,15 @@ export class DrizzleInboxStore implements InboxStore {
 
   async setEventFlags(id: number, flags: EventFlags) {
     if (Object.keys(flags).length) await this.db.update(igEvents).set(flags).where(eq(igEvents.id, id));
+  }
+
+  async findEvent(accountId: string, kind: IgEvent["kind"], externalId: string) {
+    const rows = await this.db
+      .select()
+      .from(igEvents)
+      .where(and(eq(igEvents.accountId, accountId), eq(igEvents.kind, kind), eq(igEvents.externalId, externalId)))
+      .limit(1);
+    return rows[0];
   }
 
   async findReplyByExternalId(externalId: string) {

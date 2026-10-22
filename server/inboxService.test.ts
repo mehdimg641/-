@@ -188,10 +188,51 @@ describe("importPostComments", () => {
     });
     const store = new MemoryInboxStore();
     const result = await importPostComments(store, "m1", "acc");
-    expect(result).toEqual({ fetched: 4, imported: 3, alreadyThere: 0, own: 1 });
+    expect(result).toEqual({ fetched: 4, imported: 3, alreadyThere: 0, own: 1, answered: 0, next: null });
     const comments = await postComments(store, "m1");
     expect(comments.map((c) => c.threadId).sort()).toEqual(["comment:77", "comment:c:c4", "comment:u:buyer1"]);
     expect((await importPostComments(store, "m1", "acc")).alreadyThere).toBe(3);
+  });
+});
+
+describe("importPostComments over many pages", () => {
+  it("follows the cursor, imports threaded replies and records comments answered on Instagram", async () => {
+    const seen: string[] = [];
+    fetchMock.mockImplementation(async (url: string) => {
+      seen.push(decodeURIComponent(url));
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (url.includes("after=CUR4")) return json({ data: [{ id: "c9", text: "آخرین کامنت", from: { id: "90", username: "late" } }] });
+      // Four pages per call: CUR1..CUR4, then the caller continues from CUR4.
+      const n = Number(url.match(/after=CUR(\d)/)?.[1] ?? 0);
+      if (n === 0) {
+        return json({
+          data: [
+            // Answered from the Instagram app: our reply sits in its thread.
+            { id: "c1", text: "قیمت؟", from: { id: "11", username: "a" }, replies: { data: [{ id: "r1", text: "سلام، دایرکت شد", from: { id: "acc", username: "sepandsteel" }, timestamp: "2026-10-01T10:00:00+0000" }] } },
+            // Not answered, but a customer replied in its thread.
+            { id: "c2", text: "لیست؟", from: { id: "12", username: "b" }, replies: { data: [{ id: "r2", text: "منم می‌خوام", from: { id: "13", username: "c" } }] } },
+          ],
+          paging: { cursors: { after: "CUR1" }, next: "x" },
+        });
+      }
+      return json({ data: [], paging: { cursors: { after: `CUR${n + 1}` }, next: "x" } });
+    });
+    const store = new MemoryInboxStore();
+    for (const r of await store.listRules()) await store.deleteRule(r.id);
+    await store.createRule({ name: "همه", keywords: [], channels: ["comment"], action: "approval", template: "سلام", templateId: null, dmTemplate: null, dmTemplateId: null, mediaIds: null, priority: 1, enabled: true, dmButtons: null });
+    const first = await importPostComments(store, "m1", "acc");
+    expect(seen[0]).toContain("fields=id,text,timestamp,username,from,replies.limit(50){id,text,timestamp,username,from}");
+    expect(first).toMatchObject({ fetched: 3, imported: 3, own: 0, answered: 1, next: "CUR4" });
+    const second = await importPostComments(store, "m1", "acc", { after: first.next });
+    expect(second).toMatchObject({ fetched: 1, imported: 1, next: null });
+    // Drafts only for the unanswered ones; the answered comment has our reply on record.
+    const events = await store.listEvents(10);
+    const byId = (id: string) => events.find((e) => e.externalId === id)!;
+    const replies = await store.listReplies({});
+    expect(replies.filter((r) => r.eventId === byId("c1").id).map((r) => [r.status, r.text, r.externalId])).toEqual([["sent", "سلام، دایرکت شد", "r1"]]);
+    for (const id of ["c2", "r2", "c9"]) expect(replies.filter((r) => r.eventId === byId(id).id).map((r) => r.status)).toEqual(["pending"]);
+    // Importing again finds everything already there and adds nothing.
+    expect(await importPostComments(store, "m1", "acc")).toMatchObject({ imported: 0, alreadyThere: 3, answered: 0 });
   });
 });
 
@@ -221,7 +262,7 @@ describe("importHistory", () => {
     });
     const store = new MemoryInboxStore();
     const result = await importHistory(store, "acc");
-    expect(result.comments).toEqual({ posts: 2, reported: 7, fetched: 1, imported: 1, hidden: 5 });
+    expect(result.comments).toEqual({ posts: 2, reported: 7, fetched: 1, imported: 1, hidden: 5, more: 0 });
     expect(result.dms).toEqual({ fetched: 1, imported: 1, error: null });
     expect(calls).toContain("POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages,message_reactions");
     const events = await store.listEvents(10);

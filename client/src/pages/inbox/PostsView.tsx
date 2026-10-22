@@ -54,7 +54,9 @@ export function PostsView() {
   );
 }
 
-function importMessage(r: RouterOutputs["posts"]["importComments"], post: Post) {
+type ImportTotals = Pick<RouterOutputs["posts"]["importComments"], "fetched" | "imported" | "alreadyThere" | "own" | "answered">;
+
+function importMessage(r: ImportTotals, post: Post) {
   if (!r.fetched) {
     if (!post.igComments) return "اینستاگرام برای این پست کامنتی گزارش نمی‌کند.";
     return `اینستاگرام می‌گوید این پست ${faNum(post.igComments)} کامنت دارد ولی متنشان را نداد. توکن مشکلی ندارد (درخواست بدون خطا انجام شد و ساختن توکن تازه لازم نیست)؛ برنامهٔ Meta در حالت Development است و Meta کامنت کسانی را که در App roles نیستند پنهان می‌کند. بعد از Live شدن برنامه دوباره امتحان کنید؛ تا آن موقع کامنت حساب‌هایی که Instagram Tester هستند می‌آید.`;
@@ -62,6 +64,7 @@ function importMessage(r: RouterOutputs["posts"]["importComments"], post: Post) 
   const parts = [`${faNum(r.fetched)} کامنت از اینستاگرام خوانده شد`];
   if (r.imported) parts.push(`${faNum(r.imported)} کامنت تازه وارد شد و پیش‌نویس‌هایش در صف تأیید است (ارسال خودکار نمی‌شوند)`);
   if (r.alreadyThere) parts.push(`${faNum(r.alreadyThere)} کامنت از قبل در برنامه بود`);
+  if (r.answered) parts.push(`${faNum(r.answered)} کامنت که در اینستاگرام جوابش داده شده بود «جواب‌داده» ثبت شد و پیش‌نویس نمی‌گیرد`);
   if (r.own) parts.push(`${faNum(r.own)} کامنت خود صفحه نادیده گرفته شد`);
   return parts.join("؛ ") + ".";
 }
@@ -103,13 +106,32 @@ function PostDetail({ post, onClose }: { post: Post; onClose: () => void }) {
     utils.approvals.list.invalidate();
     utils.inbox.invalidate();
   };
-  const importComments = trpc.posts.importComments.useMutation({
-    onSuccess: (r) => {
-      setNotice({ ok: r.fetched > 0, text: importMessage(r, post) });
-      refresh();
-    },
-    onError: (e) => setNotice({ ok: false, text: errorMessage(e) }),
-  });
+  const importComments = trpc.posts.importComments.useMutation();
+  const [importing, setImporting] = useState("");
+  // Instagram gives 200 comments per call; keep calling with the cursor until the post is done.
+  const importAll = async () => {
+    setNotice(null);
+    const totals: ImportTotals = { fetched: 0, imported: 0, alreadyThere: 0, own: 0, answered: 0 };
+    let after: string | null = null;
+    try {
+      do {
+        setImporting(`در حال دریافت… ${faNum(totals.fetched)}${post.igComments ? ` از حدود ${faNum(post.igComments)}` : ""} کامنت`);
+        const r = await importComments.mutateAsync({ mediaId: post.id, after });
+        totals.fetched += r.fetched;
+        totals.imported += r.imported;
+        totals.alreadyThere += r.alreadyThere;
+        totals.own += r.own;
+        totals.answered += r.answered;
+        after = r.next;
+        refresh();
+      } while (after);
+      setNotice({ ok: totals.fetched > 0, text: importMessage(totals, post) });
+    } catch (e) {
+      setNotice({ ok: false, text: `${errorMessage(e)}${totals.fetched ? ` (تا این‌جا ${faNum(totals.fetched)} کامنت خوانده شد؛ دوباره بزنید تا ادامه دهد)` : ""}` });
+    } finally {
+      setImporting("");
+    }
+  };
   const postRules = (rules.data ?? []).filter((r) => r.mediaIds?.includes(post.id));
 
   return (
@@ -125,9 +147,10 @@ function PostDetail({ post, onClose }: { post: Post; onClose: () => void }) {
       </div>
 
       <div className="builder-buttons">
-        <button className="secondary-button" disabled={importComments.isPending} onClick={() => { setNotice(null); importComments.mutate({ mediaId: post.id }); }}><Download size={15} /> {importComments.isPending ? "در حال دریافت..." : "دریافت کامنت‌های قبلی"}</button>
+        <button className="secondary-button" disabled={Boolean(importing)} onClick={importAll}><Download size={15} /> {importing ? "در حال دریافت..." : "دریافت همهٔ کامنت‌ها"}</button>
         <button className="secondary-button" onClick={() => setBuilding((v) => !v)}><Plus size={15} /> قانون برای این پست</button>
       </div>
+      {importing && <div className="queue-progress">{importing}</div>}
       {notice && <div className={notice.ok ? "settings-success" : "settings-warning"}>{notice.ok ? <Check size={16} /> : <AlertCircle size={16} />}<span>{notice.text}</span></div>}
 
       <div className="post-rules">

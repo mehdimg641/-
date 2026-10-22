@@ -34,7 +34,7 @@ import { decideReply, normalizeText, renderTemplate } from "./replyRules";
 import { metaSetting } from "./metaSettings";
 
 const TONES = ["orange", "gold", "blue", "green", "violet"];
-const THREAD_EVENT_LIMIT = 2000;
+const THREAD_EVENT_LIMIT = 5000;
 
 /** Auto-sending is opt-in; by default every draft waits for an operator. */
 export function isAutoReplyEnabled() {
@@ -635,23 +635,74 @@ export async function postComments(store: InboxStore, mediaId: string): Promise<
  * Imports a post's existing comments (from before the webhook was connected). Rules draft
  * replies for them, but nothing is sent automatically: old comments always wait for approval.
  */
-export async function importPostComments(store: InboxStore, mediaId: string, accountId: string, options: { draft?: boolean; read?: boolean } = {}) {
-  const comments = await listMediaComments(mediaId);
+/**
+ * Reads one slice of a post's comments (pass `after` from the previous call's `next` to continue,
+ * until `next` is null) and stores the new ones, threaded replies from customers included.
+ * Comments that already have our reply on Instagram, from this app or the Instagram app itself,
+ * are recorded as answered, so no draft is made for them and stale public drafts are dropped.
+ */
+export async function importPostComments(
+  store: InboxStore,
+  mediaId: string,
+  accountId: string,
+  options: { draft?: boolean; read?: boolean; after?: string | null } = {},
+) {
+  const { comments, next } = await listMediaComments(mediaId, options.after);
   // Meta can leave out a comment's author; then the account's own comments are recognised by username.
-  const own = comments.some((c) => !c.fromId) ? await ownUsername() : null;
+  const anyUnknown = comments.some((c) => !c.fromId || c.replies.some((r) => !r.fromId));
+  const ownName = anyUnknown ? await ownUsername() : null;
+  const isOwn = (c: { fromId: string | null; username: string | null }) => (c.fromId !== null && c.fromId === accountId) || (ownName !== null && c.username === ownName);
+
+  type Item = { event: IncomingEvent; answer: { id: string; text: string; at: Date | null } | null };
+  const items: Item[] = [];
   let skippedOwn = 0;
-  const events: IncomingEvent[] = [];
-  for (const c of comments) {
-    if ((c.fromId && c.fromId === accountId) || (own && c.username === own)) {
-      skippedOwn++;
-      continue;
-    }
+  const toEvent = (c: { id: string; text: string; username: string | null; fromId: string | null; at: Date | null }): IncomingEvent => ({
+    accountId,
+    kind: "comment",
+    externalId: c.id,
     // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
-    const senderId = c.fromId ?? (c.username ? `u:${c.username}` : `c:${c.id}`);
-    events.push({ accountId, kind: "comment", externalId: c.id, senderId, username: c.username, text: c.text, mediaId, at: c.at });
+    senderId: c.fromId ?? (c.username ? `u:${c.username}` : `c:${c.id}`),
+    username: c.username,
+    text: c.text,
+    mediaId,
+    at: c.at,
+  });
+  for (const c of comments) {
+    // Our own reply anywhere after a message in the thread answers it.
+    const ownAfter = (from: number) => c.replies.slice(from).find(isOwn) ?? null;
+    if (isOwn(c)) skippedOwn++;
+    else items.push({ event: toEvent(c), answer: ownAfter(0) });
+    // Our own replies in a thread are answers, not comments to count or skip.
+    c.replies.forEach((r, i) => {
+      if (!isOwn(r)) items.push({ event: toEvent(r), answer: ownAfter(i + 1) });
+    });
   }
-  const result = await ingestEvents(store, events, { allowAutoSend: false, ...options });
-  return { fetched: comments.length, imported: result.stored, alreadyThere: result.duplicates, own: skippedOwn };
+
+  const answered = items.filter((i) => i.answer);
+  const open = items.filter((i) => !i.answer).map((i) => i.event);
+  const fresh = await ingestEvents(store, open, { allowAutoSend: false, ...options });
+  const known = await ingestEvents(store, answered.map((i) => i.event), { allowAutoSend: false, draft: false, read: options.read });
+  let markedAnswered = 0;
+  for (const { event, answer } of answered) {
+    const stored = await store.findEvent(accountId, "comment", event.externalId);
+    if (!stored || !answer) continue;
+    const own = await store.listReplies({ eventIds: [stored.id] });
+    // Drafts for a comment that was answered on Instagram would answer it twice.
+    for (const r of own.filter((r) => r.status === "pending" && r.channel === "reply")) {
+      if (await store.claimReply(r.id, ["pending"])) await store.updateReply(r.id, { status: "rejected" });
+    }
+    if (own.some((r) => r.channel === "reply" && r.status === "sent")) continue;
+    await store.createReply({ eventId: stored.id, source: "manual", channel: "reply", text: answer.text, status: "sent", externalId: answer.id, sentAt: answer.at ?? stored.createdAt });
+    markedAnswered++;
+  }
+  return {
+    fetched: items.length + skippedOwn,
+    imported: fresh.stored + known.stored,
+    alreadyThere: fresh.duplicates + known.duplicates,
+    own: skippedOwn,
+    answered: markedAnswered,
+    next,
+  };
 }
 
 /** Posts whose comments the history import reads; each one is a Graph call. */
@@ -673,13 +724,15 @@ export async function importHistory(store: InboxStore, accountId: string) {
     .filter((m) => (m.commentsCount ?? 0) > 0)
     .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0))
     .slice(0, HISTORY_POSTS);
-  const comments = { posts: posts.length, reported: 0, fetched: 0, imported: 0, hidden: 0 };
+  // `more`: posts with comments beyond the first slice, imported in full from the Posts page.
+  const comments = { posts: posts.length, reported: 0, fetched: 0, imported: 0, hidden: 0, more: 0 };
   for (const post of posts) {
     const result = await importPostComments(store, post.id, accountId, { draft: false, read: true });
     comments.reported += post.commentsCount ?? 0;
     comments.fetched += result.fetched;
     comments.imported += result.imported;
     if (!result.fetched) comments.hidden += post.commentsCount ?? 0;
+    if (result.next) comments.more++;
   }
 
   const dms = { fetched: 0, imported: 0, error: null as string | null };

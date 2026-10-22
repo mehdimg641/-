@@ -205,10 +205,10 @@ function own_username(): ?string
 }
 
 /** Follows cursor pagination up to $maxPages. */
-function graph_list(string $path, int $maxPages): array
+/** Follows cursor pagination up to $maxPages, from $after if given; 'next' resumes where it stopped. */
+function graph_pages(string $path, int $maxPages, ?string $after = null): array
 {
     $items = [];
-    $after = null;
     for ($page = 0; $page < $maxPages; $page++) {
         $sep = strpos($path, '?') === false ? '?' : '&';
         $result = graph_request('GET', $after ? $path . $sep . 'after=' . rawurlencode($after) : $path);
@@ -216,7 +216,12 @@ function graph_list(string $path, int $maxPages): array
         $after = !empty($result['paging']['next']) ? ($result['paging']['cursors']['after'] ?? null) : null;
         if (!$after) break;
     }
-    return $items;
+    return ['items' => $items, 'next' => $after ?: null];
+}
+
+function graph_list(string $path, int $maxPages): array
+{
+    return graph_pages($path, $maxPages)['items'];
 }
 
 function list_recent_media(): array
@@ -231,16 +236,35 @@ function list_recent_media(): array
     }, $media);
 }
 
-function list_media_comments(string $mediaId): array
+/** Pages per call: 4 × 50 comments keeps one request well under the host's gateway timeout. */
+const COMMENT_PAGES_PER_CALL = 4;
+
+/** One slice of a post's comments with their threads; pass 'next' back for the following slice. */
+function list_media_comments(string $mediaId, ?string $after = null): array
 {
-    $comments = graph_list('/' . rawurlencode($mediaId) . '/comments?fields=id,text,timestamp,username,from&limit=50', 4);
-    $out = [];
-    foreach ($comments as $c) {
-        if (empty($c['text'])) continue;
-        $out[] = ['id' => (string) $c['id'], 'text' => (string) $c['text'], 'username' => $c['from']['username'] ?? ($c['username'] ?? null),
-            'fromId' => isset($c['from']['id']) ? (string) $c['from']['id'] : null, 'at' => graph_time($c['timestamp'] ?? null)];
+    $base = 'id,text,timestamp,username,from';
+    $read = function (string $fields) use ($mediaId, $after) {
+        return graph_pages('/' . rawurlencode($mediaId) . '/comments?fields=' . rawurlencode($fields) . '&limit=50', COMMENT_PAGES_PER_CALL, $after);
+    };
+    try {
+        $page = $read($base . ',replies.limit(50){' . $base . '}');
+    } catch (MetaApiError $e) {
+        // Without the threads we can't tell which comments were answered, but the comments still come in.
+        $page = $read($base);
     }
-    return $out;
+    $shape = function (array $c): array {
+        return ['id' => (string) $c['id'], 'text' => (string) $c['text'], 'username' => $c['from']['username'] ?? ($c['username'] ?? null),
+            'fromId' => isset($c['from']['id']) ? (string) $c['from']['id'] : null, 'at' => graph_time($c['timestamp'] ?? null)];
+    };
+    $out = [];
+    foreach ($page['items'] as $c) {
+        if (empty($c['text'])) continue;
+        $replies = [];
+        foreach ($c['replies']['data'] ?? [] as $r) if (!empty($r['text'])) $replies[] = $shape($r);
+        usort($replies, function ($a, $b) { return strcmp((string) $a['at'], (string) $b['at']); });
+        $out[] = $shape($c) + ['replies' => $replies];
+    }
+    return ['comments' => $out, 'next' => $page['next']];
 }
 
 /** Graph timestamp ("2026-10-19T09:00:00+0000") → MySQL UTC string, or null. */

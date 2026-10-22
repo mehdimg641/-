@@ -302,11 +302,12 @@ const postsRouter = router({
   list: adminProcedure.query(async () => listPosts(await getInboxStore())),
   sync: adminProcedure.mutation(async () => meta(async () => syncPosts(await getInboxStore()))),
   comments: adminProcedure.input(mediaIdInput).query(async ({ input }) => postComments(await getInboxStore(), input.mediaId)),
-  importComments: adminProcedure.input(mediaIdInput).mutation(async ({ input }) => {
+  /** One slice of a post's comments; call again with `after` = the returned `next` until it is null. */
+  importComments: adminProcedure.input(mediaIdInput.extend({ after: z.string().max(1000).nullable().optional() })).mutation(async ({ input }) => {
     await refreshMetaSettings();
     const accountId = allowedAccountIds()[0] ?? "";
     if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید" });
-    return meta(async () => importPostComments(await getInboxStore(), input.mediaId, accountId));
+    return meta(async () => importPostComments(await getInboxStore(), input.mediaId, accountId, { after: input.after }));
   }),
 });
 

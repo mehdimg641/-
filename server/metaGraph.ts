@@ -196,18 +196,22 @@ export async function ownUsername(): Promise<string | null> {
 
 type GraphPage<T> = { data?: T[]; paging?: { next?: string; cursors?: { after?: string } } };
 
-/** Follows cursor pagination up to `maxPages`. */
-async function graphList<T>(path: string, maxPages: number) {
+/** Follows cursor pagination up to `maxPages`, from `after` if given; `next` resumes where it stopped. */
+async function graphPages<T>(path: string, maxPages: number, after?: string | null) {
   const items: T[] = [];
-  let after: string | undefined;
+  let cursor = after ?? undefined;
   for (let page = 0; page < maxPages; page++) {
     const sep = path.includes("?") ? "&" : "?";
-    const result = (await graphRequest("GET", after ? `${path}${sep}after=${encodeURIComponent(after)}` : path)) as GraphPage<T>;
+    const result = (await graphRequest("GET", cursor ? `${path}${sep}after=${encodeURIComponent(cursor)}` : path)) as GraphPage<T>;
     items.push(...(result.data ?? []));
-    after = result.paging?.next ? result.paging.cursors?.after : undefined;
-    if (!after) break;
+    cursor = result.paging?.next ? result.paging.cursors?.after : undefined;
+    if (!cursor) break;
   }
-  return items;
+  return { items, next: cursor ?? null };
+}
+
+async function graphList<T>(path: string, maxPages: number) {
+  return (await graphPages<T>(path, maxPages)).items;
 }
 
 /** Recent posts of the connected account, newest first. */
@@ -227,12 +231,44 @@ export async function listRecentMedia() {
 }
 
 /** Top-level comments of a post (up to 200). */
-export async function listMediaComments(mediaId: string) {
-  type Comment = { id: string; text?: string; timestamp?: string; username?: string; from?: { id?: string; username?: string } };
-  const comments = await graphList<Comment>(`/${encodeURIComponent(mediaId)}/comments?fields=id,text,timestamp,username,from&limit=50`, 4);
-  return comments
+export type MediaComment = {
+  id: string;
+  text: string;
+  username: string | null;
+  fromId: string | null;
+  at: Date | null;
+  /** Replies in this comment's thread, oldest first (customers' and our own). */
+  replies: Array<{ id: string; text: string; username: string | null; fromId: string | null; at: Date | null }>;
+};
+
+/** Pages per call: 4 × 50 comments keeps one request well under the host's gateway timeout. */
+export const COMMENT_PAGES_PER_CALL = 4;
+
+/** One slice of a post's comments with their threads; pass `next` back for the following slice. */
+export async function listMediaComments(mediaId: string, after?: string | null) {
+  type Raw = { id: string; text?: string; timestamp?: string; username?: string; from?: { id?: string; username?: string } };
+  type Comment = Raw & { replies?: { data?: Raw[] } };
+  const base = "id,text,timestamp,username,from";
+  const read = (fields: string) => graphPages<Comment>(`/${encodeURIComponent(mediaId)}/comments?fields=${encodeURIComponent(fields)}&limit=50`, COMMENT_PAGES_PER_CALL, after);
+  let page: Awaited<ReturnType<typeof read>>;
+  try {
+    page = await read(`${base},replies.limit(50){${base}}`);
+  } catch (error) {
+    // Without the threads we can't tell which comments were answered, but the comments still come in.
+    if (!(error instanceof MetaApiError)) throw error;
+    page = await read(base);
+  }
+  const shape = (c: Raw) => ({ id: String(c.id), text: c.text ?? "", username: c.from?.username ?? c.username ?? null, fromId: c.from?.id ? String(c.from.id) : null, at: graphTime(c.timestamp) });
+  const comments: MediaComment[] = page.items
     .filter((c) => c.text)
-    .map((c) => ({ id: String(c.id), text: c.text!, username: c.from?.username ?? c.username ?? null, fromId: c.from?.id ? String(c.from.id) : null, at: graphTime(c.timestamp) }));
+    .map((c) => ({
+      ...shape(c),
+      replies: (c.replies?.data ?? [])
+        .filter((r) => r.text)
+        .map(shape)
+        .sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
+    }));
+  return { comments, next: page.next };
 }
 
 function graphTime(value: string | undefined) {
