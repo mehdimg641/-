@@ -235,7 +235,10 @@ function procedures(): array
         // Sends several drafts one after another; a failure doesn't stop the rest.
         'approvals.approveMany' => ['mutation', $admin(function ($in, $user) {
             $items = $in['items'] ?? null;
-            if (!is_array($items) || !$items || count($items) > 100) throw new ApiError('BAD_REQUEST', 'بین ۱ تا ۱۰۰ مورد انتخاب کنید');
+            if (!is_array($items) || !$items || count($items) > 25) throw new ApiError('BAD_REQUEST', 'بین ۱ تا ۲۵ مورد در هر درخواست');
+            // Small batches stay under the host's gateway timeout; if the browser still gives up,
+            // finish the batch so no reply is left half-sent.
+            ignore_user_abort(true);
             @set_time_limit(300);
             $sent = 0;
             $failed = [];
