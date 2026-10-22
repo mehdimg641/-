@@ -9,6 +9,7 @@ type QueueKind = "all" | "comment" | "private" | "dm";
 type QueueStatus = "all" | "pending" | "failed" | "open" | "expired";
 type QueueAnswer = "all" | "unanswered" | "answered";
 const PAGE = 30;
+const SEND_BATCH = 10;
 const isNew = (item: ApprovalItem) => Date.now() - new Date(item.receivedAt).getTime() < 3_600_000;
 /** Past Instagram's deadline (7 days for a DM to a commenter, 24 hours for a DM reply). */
 export const isExpired = (item: ApprovalItem) => item.expiresAt !== null && new Date(item.expiresAt).getTime() <= Date.now();
@@ -155,7 +156,8 @@ export function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     setShown(PAGE);
   };
 
-  // Several batches of at most 100: the server sends each reply to Instagram one by one.
+  // Small batches: the server sends each reply to Instagram one by one, and a long request
+  // runs into the host's gateway timeout (an HTML error page instead of an answer).
   const sendAll = async (chosen: ApprovalItem[], label: string) => {
     // Instagram refuses these anyway; leave them for the operator to reject or answer by hand.
     const expired = chosen.filter(isExpired).length;
@@ -170,9 +172,9 @@ export function ApprovalQueue({ items }: { items: ApprovalItem[] }) {
     let sent = 0;
     const failed: Array<{ id: number; error: string }> = [];
     try {
-      for (let i = 0; i < list.length; i += 100) {
-        setBulkBusy(`در حال ارسال… ${faNum(Math.min(i + 100, list.length))} از ${faNum(list.length)}`);
-        const result = await approveMany.mutateAsync({ items: list.slice(i, i + 100).map((item) => ({ id: item.id, text: drafts[item.id] })) });
+      for (let i = 0; i < list.length; i += SEND_BATCH) {
+        setBulkBusy(`در حال ارسال… ${faNum(Math.min(i + SEND_BATCH, list.length))} از ${faNum(list.length)}`);
+        const result = await approveMany.mutateAsync({ items: list.slice(i, i + SEND_BATCH).map((item) => ({ id: item.id, text: drafts[item.id] })) });
         sent += result.sent;
         failed.push(...result.failed);
       }

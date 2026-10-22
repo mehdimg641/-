@@ -6,6 +6,13 @@ export const APP_BUILD = __APP_BUILD__;
 /** What changed, newest first; shown in Settings. */
 export const CHANGELOG: Array<{ version: string; items: string[] }> = [
   {
+    version: "1.12.1",
+    items: [
+      "تأیید گروهی ۱۰تا ۱۰تا ارسال می‌شود تا درخواست به سقف زمانی هاست نخورد (علت خطای «Unexpected token '<' … is not valid JSON»)",
+      "اگر هاست به‌جای جواب صفحهٔ خطا برگرداند، پیام فارسی با کد و علت احتمالی نشان داده می‌شود؛ ارسالِ نیمه‌کاره در سرور تا آخر انجام می‌شود",
+    ],
+  },
+  {
     version: "1.12.0",
     items: [
       "«کامنت‌ها» و «دایرکت‌ها» دو منوی جدا با شمارندهٔ خوانده‌نشده؛ کنار هر کامنت تصویر و کپشن پست، و در دایرکت‌ها مهلت ۲۴ ساعتهٔ پاسخ",

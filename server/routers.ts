@@ -128,7 +128,7 @@ const approvalsRouter = router({
     .mutation(async ({ input, ctx }) => guard(async () => sendReply(await getInboxStore(), input.id, ctx.user.id, input.text))),
   /** Sends several drafts one after another; a failure doesn't stop the rest. */
   approveMany: adminProcedure
-    .input(z.object({ items: z.array(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() })).min(1).max(100) }))
+    .input(z.object({ items: z.array(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() })).min(1).max(25) }))
     .mutation(async ({ input, ctx }) => {
       const store = await getInboxStore();
       let sent = 0;
