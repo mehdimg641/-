@@ -223,7 +223,7 @@ describe("importHistory", () => {
     const result = await importHistory(store, "acc");
     expect(result.comments).toEqual({ posts: 2, reported: 7, fetched: 1, imported: 1, hidden: 5 });
     expect(result.dms).toEqual({ fetched: 1, imported: 1, error: null });
-    expect(calls).toContain("POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages");
+    expect(calls).toContain("POST https://graph.instagram.com/v23.0/me/subscribed_apps?subscribed_fields=comments,messages,message_reactions");
     const events = await store.listEvents(10);
     expect(events.map((e) => [e.kind, e.externalId, e.createdAt.toISOString(), e.isRead])).toEqual(
       expect.arrayContaining([

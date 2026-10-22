@@ -46,6 +46,12 @@ export const igEvents = mysqlTable(
     /** Rule matched when the event arrived, if any. */
     ruleId: int("ruleId"),
     isRead: boolean("isRead").default(false).notNull(),
+    /** DMs: our reaction on the customer's message ("love"), or null. */
+    reaction: varchar("reaction", { length: 16 }),
+    /** Comments: hidden on Instagram by an operator. */
+    hidden: boolean("hidden").default(false).notNull(),
+    /** Comments: deleted on Instagram by an operator; kept here for the record. */
+    deleted: boolean("deleted").default(false).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => [
@@ -107,6 +113,10 @@ export const replies = mysqlTable(
     error: text("error"),
     /** users.id of the operator who approved, rejected or wrote the reply. */
     decidedBy: int("decidedBy"),
+    /** Id Instagram gave what we sent (DM message_id or reply comment id). */
+    externalId: varchar("externalId", { length: 191 }),
+    /** Emoji the customer reacted to our DM with, or null. */
+    customerReaction: varchar("customerReaction", { length: 32 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     sentAt: timestamp("sentAt"),
   },

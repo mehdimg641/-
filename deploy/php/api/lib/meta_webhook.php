@@ -67,6 +67,28 @@ function extract_events(array $body): array
     return $events;
 }
 
+const REACTION_EMOJI = ['love' => '❤️', 'like' => '👍', 'laugh' => '😂', 'wow' => '😮', 'sad' => '😢', 'angry' => '😡', 'smile' => '😊'];
+
+/** Customers' reactions to our DMs (message_reactions); our own reactions echo back and are skipped. */
+function extract_reactions(array $body): array
+{
+    $allowed = allowed_account_ids();
+    $reactions = [];
+    foreach ($body['entry'] ?? [] as $entry) {
+        $accountId = isset($entry['id']) ? (string) $entry['id'] : '';
+        if ($accountId === '' || ($allowed && !in_array($accountId, $allowed, true))) continue;
+        foreach ($entry['messaging'] ?? [] as $m) {
+            $r = $m['reaction'] ?? null;
+            $senderId = isset($m['sender']['id']) ? (string) $m['sender']['id'] : '';
+            if (empty($r['mid']) || $senderId === '' || $senderId === $accountId || in_array($senderId, $allowed, true)) continue;
+            $emoji = ($r['action'] ?? '') === 'unreact' ? null : (!empty($r['emoji']) ? (string) $r['emoji'] : (REACTION_EMOJI[$r['reaction'] ?? ''] ?? '❤️'));
+            $reactions[] = ['mid' => (string) $r['mid'], 'emoji' => $emoji];
+            if (count($reactions) >= MAX_EVENTS_PER_REQUEST) return $reactions;
+        }
+    }
+    return $reactions;
+}
+
 // --- webhook log: shows in Settings whether Meta calls in and why a call was dropped ----------
 
 /** Never throws: logging must not turn a delivery into an error. */

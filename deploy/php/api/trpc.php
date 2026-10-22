@@ -223,6 +223,16 @@ function procedures(): array
             mark_read($in['kind'], req_str($in, 'senderId', 1, 64));
             return ['success' => true];
         })],
+        'inbox.react' => ['mutation', $admin(function ($in) {
+            if (!is_bool($in['on'] ?? null)) throw new ApiError('BAD_REQUEST', 'on نامعتبر است');
+            meta_call(function () use ($in) { react_to_event(req_int($in, 'eventId'), $in['on']); });
+            return ['success' => true];
+        })],
+        'inbox.moderate' => ['mutation', $admin(function ($in, $user) {
+            if (!in_array($in['action'] ?? null, ['hide', 'unhide', 'delete'], true)) throw new ApiError('BAD_REQUEST', 'action نامعتبر است');
+            meta_call(function () use ($in, $user) { moderate_comment(req_int($in, 'eventId'), $in['action'], $user['id']); });
+            return ['success' => true];
+        })],
         'inbox.reply' => ['mutation', $admin(function ($in, $user) {
             return send_manual_reply(req_int($in, 'eventId'), messages_input(req_str($in, 'text', 1, 4000)), $user['id']);
         })],

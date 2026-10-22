@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import express, { type Express, type Request, type Response } from "express";
-import { ingestEvents, sendReply } from "./inboxService";
+import { applyCustomerReactions, ingestEvents, sendReply, type CustomerReaction } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
 import { recordWebhook } from "./webhookLog";
@@ -25,6 +25,8 @@ type MessagingEvent = {
   sender?: { id?: string };
   recipient?: { id?: string };
   message?: { mid?: string; text?: string; is_echo?: boolean; is_deleted?: boolean; quick_reply?: { payload?: string } };
+  /** message_reactions: someone reacted to (or un-reacted from) a message. */
+  reaction?: { mid?: string; action?: "react" | "unreact"; reaction?: string; emoji?: string };
 };
 
 export type WebhookBody = {
@@ -87,6 +89,28 @@ export function allowedAccountIds() {
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+}
+
+const REACTION_EMOJI: Record<string, string> = { love: "❤️", like: "👍", laugh: "😂", wow: "😮", sad: "😢", angry: "😡", smile: "😊" };
+
+/** Customers' reactions to our DMs (message_reactions); our own reactions echo back and are skipped. */
+export function extractReactions(body: WebhookBody): CustomerReaction[] {
+  const allowed = allowedAccountIds();
+  const ownIds = new Set(allowed);
+  const reactions: CustomerReaction[] = [];
+  for (const entry of body.entry ?? []) {
+    const accountId = entry.id;
+    if (!accountId || (allowed.length > 0 && !ownIds.has(accountId))) continue;
+    for (const m of entry.messaging ?? []) {
+      const r = m.reaction;
+      const senderId = m.sender?.id;
+      if (!r?.mid || !senderId || senderId === accountId || ownIds.has(senderId)) continue;
+      const emoji = r.action === "unreact" ? null : r.emoji || REACTION_EMOJI[r.reaction ?? ""] || "❤️";
+      reactions.push({ mid: r.mid, emoji });
+      if (reactions.length >= MAX_EVENTS_PER_REQUEST) return reactions;
+    }
+  }
+  return reactions;
 }
 
 /**
@@ -214,6 +238,7 @@ export function registerMetaWebhook(app: Express) {
       const store = await getInboxStore();
       const events = extractEvents(body);
       const result = await ingestEvents(store, events);
+      await applyCustomerReactions(store, extractReactions(body));
       toSend = result.toSend;
       recordWebhook({ method: "POST", status: 200, outcome: "received", detail: describeResult(payload, events.length, result), accounts: payload.accounts });
     } catch (error) {

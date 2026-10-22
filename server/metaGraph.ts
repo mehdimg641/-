@@ -45,7 +45,7 @@ export function describeMetaError(status: number, error: MetaErrorBody) {
   return hint ? `${hint} — ${raw}` : raw;
 }
 
-async function graphRequest(method: "GET" | "POST", path: string, body?: Record<string, unknown>) {
+async function graphRequest(method: "GET" | "POST" | "DELETE", path: string, body?: Record<string, unknown>) {
   await refreshMetaSettings();
   const token = metaSetting("META_ACCESS_TOKEN");
   if (!token) throw new MetaApiError("توکن دسترسی اینستاگرام تنظیم نشده است (تنظیمات → اتصال اینستاگرام)");
@@ -126,6 +126,25 @@ export function sendPrivateReply(commentId: string, text: string, quickReplies?:
   return graphRequest("POST", `/me/messages`, { recipient: { comment_id: commentId }, message: withQuickReplies(text, quickReplies) });
 }
 
+/** Puts a ❤️ on (or takes it off) a customer's DM. Instagram only sends the "love" reaction. */
+export function reactToMessage(recipientId: string, messageId: string, on: boolean) {
+  return graphRequest("POST", "/me/messages", {
+    recipient: { id: recipientId },
+    sender_action: on ? "react" : "unreact",
+    payload: on ? { message_id: messageId, reaction: "love" } : { message_id: messageId },
+  });
+}
+
+/** Hides (or shows again) a comment under one of our posts. A hidden comment can't be replied to. */
+export function setCommentHidden(commentId: string, hidden: boolean) {
+  return graphRequest("POST", `/${encodeURIComponent(commentId)}`, { hide: hidden });
+}
+
+/** Deletes a comment under one of our posts on Instagram. */
+export function deleteComment(commentId: string) {
+  return graphRequest("DELETE", `/${encodeURIComponent(commentId)}`);
+}
+
 /** The account whose media to list: "me" with an Instagram Login token, else the configured IG account id. */
 function mediaOwner() {
   if (getMetaApiHost() === "instagram") return "me";
@@ -135,6 +154,8 @@ function mediaOwner() {
 }
 
 const WEBHOOK_FIELDS = ["comments", "messages"];
+/** Wanted but not required: customers' reactions to our DMs. */
+const OPTIONAL_WEBHOOK_FIELDS = ["message_reactions"];
 
 function requireInstagramLogin() {
   if (getMetaApiHost() !== "instagram") {
@@ -154,7 +175,12 @@ export async function getWebhookSubscription() {
 /** Asks Meta to deliver comment and message events for this account to the app's webhook. */
 export async function subscribeWebhooks() {
   requireInstagramLogin();
-  await graphRequest("POST", `/me/subscribed_apps?subscribed_fields=${WEBHOOK_FIELDS.join(",")}`);
+  try {
+    await graphRequest("POST", `/me/subscribed_apps?subscribed_fields=${[...WEBHOOK_FIELDS, ...OPTIONAL_WEBHOOK_FIELDS].join(",")}`);
+  } catch {
+    // An optional field Meta refuses must not cost us comments and messages.
+    await graphRequest("POST", `/me/subscribed_apps?subscribed_fields=${WEBHOOK_FIELDS.join(",")}`);
+  }
   return getWebhookSubscription();
 }
 

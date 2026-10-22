@@ -19,7 +19,9 @@ import {
   isAutoReplyEnabled,
   listApprovals,
   markSentManually,
+  moderateComment,
   moveToPublicReply,
+  reactToEvent,
   rejectReply,
   ReplyStateError,
   sendManualReply,
@@ -80,6 +82,8 @@ async function guard<T>(fn: () => Promise<T>) {
     return await fn();
   } catch (error) {
     if (error instanceof ReplyStateError) throw new TRPCError({ code: "CONFLICT", message: error.message });
+    // Instagram's refusal, already explained in Persian (describeMetaError).
+    if (error instanceof MetaApiError) throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
     throw error;
   }
 }
@@ -116,6 +120,22 @@ const inboxRouter = router({
       await (await getInboxStore()).markRead(input.kind, input.senderId);
       return { success: true } as const;
     }),
+  /** ❤️ on a customer's DM. */
+  react: adminProcedure.input(z.object({ eventId: z.number().int(), on: z.boolean() })).mutation(async ({ input }) =>
+    guard(async () => {
+      await reactToEvent(await getInboxStore(), input.eventId, input.on);
+      return { success: true } as const;
+    }),
+  ),
+  /** Hide, show again or delete a customer's comment on Instagram. */
+  moderate: adminProcedure
+    .input(z.object({ eventId: z.number().int(), action: z.enum(["hide", "unhide", "delete"]) }))
+    .mutation(async ({ input, ctx }) =>
+      guard(async () => {
+        await moderateComment(await getInboxStore(), input.eventId, input.action, ctx.user.id);
+        return { success: true } as const;
+      }),
+    ),
   reply: adminProcedure
     .input(z.object({ eventId: z.number().int(), text: z.string().trim().min(1).max(4000).refine(messagesFit, MESSAGES_TOO_LONG) }))
     .mutation(async ({ input, ctx }) => guard(async () => sendManualReply(await getInboxStore(), input.eventId, input.text, ctx.user.id))),

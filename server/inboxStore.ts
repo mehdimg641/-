@@ -22,7 +22,8 @@ import { DEFAULT_RULES, DEFAULT_TEMPLATES } from "./replyRules";
 export type RuleInput = Omit<InsertReplyRule, "id" | "createdAt" | "updatedAt">;
 export type TemplateInput = Omit<InsertReplyTemplate, "id" | "createdAt" | "updatedAt">;
 export type MediaInput = Omit<InsertIgMedia, "syncedAt">;
-export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt" | "channel" | "source" | "quickReplies">>;
+export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt" | "channel" | "source" | "quickReplies" | "externalId" | "customerReaction">>;
+export type EventFlags = Partial<Pick<IgEvent, "reaction" | "hidden" | "deleted">>;
 
 export interface InboxStore {
   readonly persistent: boolean;
@@ -32,6 +33,9 @@ export interface InboxStore {
   listEvents(limit: number): Promise<IgEvent[]>;
   markRead(kind: IgEvent["kind"], senderId: string): Promise<void>;
   setEventRule(id: number, ruleId: number | null): Promise<void>;
+  setEventFlags(id: number, flags: EventFlags): Promise<void>;
+  /** The reply Instagram knows by this id (our sent DM's message_id), for customer reactions. */
+  findReplyByExternalId(externalId: string): Promise<Reply | undefined>;
   listRules(): Promise<ReplyRule[]>;
   createRule(rule: RuleInput): Promise<ReplyRule>;
   updateRule(id: number, patch: Partial<RuleInput>): Promise<ReplyRule | undefined>;
@@ -104,6 +108,9 @@ export class MemoryInboxStore implements InboxStore {
       mediaId: event.mediaId ?? null,
       ruleId: event.ruleId ?? null,
       isRead: event.isRead ?? false,
+      reaction: event.reaction ?? null,
+      hidden: event.hidden ?? false,
+      deleted: event.deleted ?? false,
       createdAt: event.createdAt ?? new Date(),
     };
     this.events.push(stored);
@@ -125,6 +132,15 @@ export class MemoryInboxStore implements InboxStore {
   async setEventRule(id: number, ruleId: number | null) {
     const event = this.events.find((e) => e.id === id);
     if (event) event.ruleId = ruleId;
+  }
+
+  async setEventFlags(id: number, flags: EventFlags) {
+    const event = this.events.find((e) => e.id === id);
+    if (event) Object.assign(event, flags);
+  }
+
+  async findReplyByExternalId(externalId: string) {
+    return this.replies.find((r) => r.externalId === externalId);
   }
 
   async listRules() {
@@ -160,6 +176,8 @@ export class MemoryInboxStore implements InboxStore {
       status: reply.status ?? "pending",
       error: reply.error ?? null,
       decidedBy: reply.decidedBy ?? null,
+      externalId: reply.externalId ?? null,
+      customerReaction: reply.customerReaction ?? null,
       createdAt: new Date(),
       sentAt: reply.sentAt ?? null,
     };
@@ -308,6 +326,15 @@ export class DrizzleInboxStore implements InboxStore {
 
   async setEventRule(id: number, ruleId: number | null) {
     await this.db.update(igEvents).set({ ruleId }).where(eq(igEvents.id, id));
+  }
+
+  async setEventFlags(id: number, flags: EventFlags) {
+    if (Object.keys(flags).length) await this.db.update(igEvents).set(flags).where(eq(igEvents.id, id));
+  }
+
+  async findReplyByExternalId(externalId: string) {
+    const rows = await this.db.select().from(replies).where(eq(replies.externalId, externalId)).limit(1);
+    return rows[0] ? normalizeReply(rows[0]) : undefined;
   }
 
   async listRules() {

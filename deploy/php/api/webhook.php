@@ -76,6 +76,7 @@ $payload = describe_payload($body);
 try {
     $events = extract_events($body);
     $result = ingest_events($events);
+    apply_customer_reactions(extract_reactions($body));
     record_webhook('POST', 200, 'received', sprintf('accounts: %s | fields: %s | stored %d, duplicate %d, ignored %d',
         implode(',', $payload['accounts']) ?: '-', implode(',', $payload['fields']) ?: '-', $result['stored'], $result['duplicates'], $payload['items'] - count($events)), $payload['accounts']);
 } catch (Throwable $e) {

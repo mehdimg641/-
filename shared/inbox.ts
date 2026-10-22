@@ -14,6 +14,15 @@ export type InboxMessage = {
   via?: "dm";
   /** Contact messages on a comment: the post it was left under. */
   mediaId?: string | null;
+  /** Contact messages: the stored event (for reacting, hiding or deleting). */
+  eventId?: number;
+  /** Contact DMs: our reaction on it ("love"). */
+  reaction?: string | null;
+  /** Contact comments: hidden or deleted on Instagram by an operator. */
+  hidden?: boolean;
+  deleted?: boolean;
+  /** Our DMs: the emoji the customer reacted with. */
+  customerReaction?: string | null;
 };
 
 export type InboxThread = {

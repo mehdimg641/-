@@ -16,14 +16,17 @@ import {
 } from "@shared/inbox";
 import type { InboxStore } from "./inboxStore";
 import {
+  deleteComment,
   getWebhookSubscription,
   listMediaComments,
   listRecentMedia,
   listRecentMessages,
   ownUsername,
+  reactToMessage,
   replyToComment,
   sendDirectMessage,
   sendPrivateReply,
+  setCommentHidden,
   subscribeWebhooks,
 } from "./metaGraph";
 import type { IncomingEvent } from "./metaWebhook";
@@ -268,21 +271,65 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
           ? replyToComment(event.externalId, body)
           : sendDirectMessage(event.senderId, body, quickReplies);
     let sentText = text;
+    let result: Record<string, unknown>;
     try {
-      await send(text, buttons);
+      result = await send(text, buttons);
     } catch (error) {
       // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
       if (!buttons) throw error;
       sentText = optionsAsText(text, buttons);
-      await send(sentText, null);
+      result = await send(sentText, null);
     }
-    await store.updateReply(replyId, { text: sentText, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date() });
+    // Kept so a customer's reaction to this DM (message_reactions webhook) finds it.
+    const externalId = typeof result.message_id === "string" ? result.message_id : typeof result.id === "string" ? result.id : null;
+    await store.updateReply(replyId, { text: sentText, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date(), externalId });
     return { ok: true as const };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await store.updateReply(replyId, { text, status: "failed", error: message.slice(0, 1000), decidedBy: operatorId });
     return { ok: false as const, error: message };
   }
+}
+
+/** Puts our ❤️ on a customer's DM, or takes it off. */
+export async function reactToEvent(store: InboxStore, eventId: number, on: boolean) {
+  const event = await store.getEvent(eventId);
+  if (!event || event.kind !== "dm") throw new ReplyStateError("فقط روی دایرکت می‌شود ریکشن گذاشت");
+  await reactToMessage(event.senderId, event.externalId, on);
+  await store.setEventFlags(eventId, { reaction: on ? "love" : null });
+}
+
+export type CommentAction = "hide" | "unhide" | "delete";
+
+/** Hides, shows again or deletes a customer's comment on Instagram. Deleting drops its pending drafts. */
+export async function moderateComment(store: InboxStore, eventId: number, action: CommentAction, operatorId: number) {
+  const event = await store.getEvent(eventId);
+  if (!event || event.kind !== "comment") throw new ReplyStateError("فقط کامنت‌ها را می‌شود مخفی یا حذف کرد");
+  if (event.deleted) throw new ReplyStateError("این کامنت قبلاً حذف شده است");
+  if (action === "delete") {
+    await deleteComment(event.externalId);
+    await store.setEventFlags(eventId, { deleted: true });
+    for (const reply of await store.listReplies({ status: "pending", eventIds: [eventId] })) {
+      if (await store.claimReply(reply.id, ["pending"])) await store.updateReply(reply.id, { status: "rejected", decidedBy: operatorId });
+    }
+    return;
+  }
+  await setCommentHidden(event.externalId, action === "hide");
+  await store.setEventFlags(eventId, { hidden: action === "hide" });
+}
+
+export type CustomerReaction = { mid: string; emoji: string | null };
+
+/** message_reactions webhook: the customer reacted to (or un-reacted from) one of our DMs. */
+export async function applyCustomerReactions(store: InboxStore, reactions: CustomerReaction[]) {
+  let applied = 0;
+  for (const r of reactions) {
+    const reply = await store.findReplyByExternalId(r.mid);
+    if (!reply) continue;
+    await store.updateReply(reply.id, { customerReaction: r.emoji });
+    applied++;
+  }
+  return applied;
 }
 
 export async function rejectReply(store: InboxStore, replyId: number, operatorId: number) {
@@ -385,11 +432,30 @@ export async function buildThreads(store: InboxStore): Promise<InboxThread[]> {
       lastEventId: event.id,
       messages: previous?.messages ?? [],
     };
-    thread.messages.push({ id: `e${event.id}`, from: "contact", text: event.text, at: event.createdAt, mediaId: event.mediaId });
+    thread.messages.push({
+      id: `e${event.id}`,
+      from: "contact",
+      text: event.text,
+      at: event.createdAt,
+      mediaId: event.mediaId,
+      eventId: event.id,
+      reaction: event.reaction,
+      hidden: event.hidden,
+      deleted: event.deleted,
+    });
     for (const reply of (repliesByEvent.get(event.id) ?? []).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
       if (reply.status === "pending") thread.priority = true;
       if (reply.status === "pending" || reply.status === "rejected") continue; // drafts live in the approval queue
-      thread.messages.push({ id: `r${reply.id}`, from: "agent", text: reply.text, at: reply.sentAt ?? reply.createdAt, status: reply.status, error: reply.error, via: reply.channel === "private" ? "dm" : undefined });
+      thread.messages.push({
+        id: `r${reply.id}`,
+        from: "agent",
+        text: reply.text,
+        at: reply.sentAt ?? reply.createdAt,
+        status: reply.status,
+        error: reply.error,
+        via: reply.channel === "private" ? "dm" : undefined,
+        customerReaction: reply.customerReaction,
+      });
     }
     threads.set(id, thread);
   }

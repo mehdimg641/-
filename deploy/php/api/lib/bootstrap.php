@@ -132,12 +132,18 @@ function ensure_schema(PDO $pdo): void
         ['replyRules', 'mediaIds', "ALTER TABLE `replyRules` ADD `mediaIds` json NULL"],
         ['replyRules', 'dmButtons', "ALTER TABLE `replyRules` ADD `dmButtons` json NULL"],
         ['replies', 'quickReplies', "ALTER TABLE `replies` ADD `quickReplies` json NULL"],
+        ['igEvents', 'reaction', "ALTER TABLE `igEvents` ADD `reaction` varchar(16) NULL"],
+        ['igEvents', 'hidden', "ALTER TABLE `igEvents` ADD `hidden` boolean NOT NULL DEFAULT false"],
+        ['igEvents', 'deleted', "ALTER TABLE `igEvents` ADD `deleted` boolean NOT NULL DEFAULT false"],
+        ['replies', 'externalId', "ALTER TABLE `replies` ADD `externalId` varchar(191) NULL"],
+        ['replies', 'customerReaction', "ALTER TABLE `replies` ADD `customerReaction` varchar(32) NULL"],
     ];
     // Cheap check first: skip the DDL once every table and column exists.
     $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia','webhookLog')")->fetchColumn();
-    $haveColumns = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND (
-        (table_name = 'replies' AND column_name IN ('channel','quickReplies')) OR
-        (table_name = 'replyRules' AND column_name IN ('templateId','dmTemplate','dmTemplateId','mediaIds','dmButtons')))")->fetchColumn();
+    $pairs = implode(' OR ', array_fill(0, count($columns), '(table_name = ? AND column_name = ?)'));
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND ($pairs)");
+    $stmt->execute(array_merge(...array_map(function ($c) { return [$c[0], $c[1]]; }, $columns)));
+    $haveColumns = (int) $stmt->fetchColumn();
     if ($haveTables === count($tables) && $haveColumns === count($columns)) return;
     foreach ($tables as $ddl) $pdo->exec($ddl . ' DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
     $check = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?");

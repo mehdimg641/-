@@ -7,8 +7,11 @@ import {
   Clock3,
   Copy,
   Download,
+  EyeOff,
   ExternalLink,
+  Heart,
   ImageIcon,
+  MoreHorizontal,
   Inbox,
   MessageCircle,
   MessageSquareText,
@@ -17,6 +20,7 @@ import {
   Send,
   Sparkles,
   TimerOff,
+  Trash2,
 } from "lucide-react";
 import { dmWindowEnd, filterInboxThreads, isUnanswered, type ApprovalItem, type InboxFilter, type InboxThread } from "@shared/inbox";
 import { trpc } from "@/lib/trpc";
@@ -135,6 +139,31 @@ export function InboxView({ kind, threads: allThreads, approvals: allApprovals, 
   const windowClosed = kind === "dm" && Boolean(windowEnd) && !windowLeft;
 
   const markRead = trpc.inbox.markRead.useMutation({ onSuccess: () => utils.inbox.threads.invalidate() });
+  const [menuFor, setMenuFor] = useState<number | null>(null);
+  const actionError = (error: unknown) => setNotice({ ok: false, text: errorMessage(error) });
+  const react = trpc.inbox.react.useMutation({ onSuccess: () => utils.inbox.threads.invalidate(), onError: actionError });
+  const moderate = trpc.inbox.moderate.useMutation({
+    onSuccess: (_, input) => {
+      setNotice({ ok: true, text: input.action === "delete" ? "کامنت از اینستاگرام حذف شد" : input.action === "hide" ? "کامنت در اینستاگرام مخفی شد" : "کامنت دوباره نمایش داده می‌شود" });
+      utils.inbox.invalidate();
+      utils.approvals.list.invalidate();
+    },
+    onError: actionError,
+  });
+  // The comment menu closes on any click outside it.
+  useEffect(() => {
+    if (menuFor === null) return;
+    const close = (event: MouseEvent) => {
+      if (!(event.target as Element | null)?.closest?.(".bubble-menu")) setMenuFor(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [menuFor]);
+  const moderateComment = (eventId: number, action: "hide" | "unhide" | "delete") => {
+    setMenuFor(null);
+    if (action === "delete" && !window.confirm("این کامنت از زیر پست در اینستاگرام حذف شود؟ این کار برگشت‌پذیر نیست.")) return;
+    moderate.mutate({ eventId, action });
+  };
   const reply = trpc.inbox.reply.useMutation({
     onSuccess: (result) => {
       if (result.ok) {
@@ -281,14 +310,57 @@ export function InboxView({ kind, threads: allThreads, approvals: allApprovals, 
               {selectedThread.messages.map((message, i) => {
                 const prevPost = selectedThread.messages.slice(0, i).reverse().find((m) => m.from === "contact")?.mediaId;
                 const showPost = kind === "comment" && message.from === "contact" && message.mediaId && message.mediaId !== prevPost;
+                const eventId = message.eventId;
+                const post = message.mediaId ? postById.get(message.mediaId) : undefined;
                 return (
                   <div key={message.id}>
-                    {showPost && <PostRef post={postById.get(message.mediaId!)} mediaId={message.mediaId!} />}
+                    {showPost && <PostRef post={post} mediaId={message.mediaId!} />}
                     <div className={`bubble-row ${message.from === "agent" ? "agent" : "contact"}`}>
                       <div className="bubble-wrap">
-                        <div className={`message-bubble ${message.from === "agent" ? "agent-bubble" : "contact-bubble"} ${message.status === "failed" ? "failed-bubble" : ""}`}>{message.text}</div>
+                        <div className="bubble-line">
+                          <div className={`message-bubble ${message.from === "agent" ? "agent-bubble" : "contact-bubble"} ${message.status === "failed" ? "failed-bubble" : ""} ${message.deleted ? "deleted-bubble" : ""} ${message.hidden && !message.deleted ? "hidden-bubble" : ""}`}>
+                            {message.text}
+                            {(message.reaction || message.customerReaction) && <span className="bubble-reaction" title={message.customerReaction ? "ریکشن مشتری" : "ریکشن شما"}>{message.customerReaction ?? "❤️"}</span>}
+                          </div>
+                          {kind === "dm" && message.from === "contact" && eventId !== undefined && (
+                            <button
+                              className={`bubble-action ${message.reaction ? "on" : ""}`}
+                              aria-label={message.reaction ? "برداشتن قلب" : "قلب گذاشتن"}
+                              title={windowClosed ? "مهلت ۲۴ ساعته بسته است؛ از اپ اینستاگرام ریکشن بگذارید" : message.reaction ? "برداشتن قلب" : "قلب گذاشتن روی این پیام"}
+                              disabled={windowClosed || react.isPending}
+                              onClick={() => react.mutate({ eventId, on: !message.reaction })}
+                            >
+                              <Heart size={15} fill={message.reaction ? "currentColor" : "none"} />
+                            </button>
+                          )}
+                          {kind === "comment" && message.from === "contact" && eventId !== undefined && !message.deleted && (
+                            <div className="bubble-menu">
+                              <button className="bubble-action" aria-label="کارهای کامنت" title="مخفی کردن، حذف یا لایک در اینستاگرام" onClick={() => setMenuFor(menuFor === eventId ? null : eventId)}>
+                                <MoreHorizontal size={15} />
+                              </button>
+                              {menuFor === eventId && (
+                                <div className="bubble-menu-list" role="menu">
+                                  <button role="menuitem" disabled={moderate.isPending} onClick={() => moderateComment(eventId, message.hidden ? "unhide" : "hide")}>
+                                    <EyeOff size={14} /> {message.hidden ? "نمایش دوباره در اینستاگرام" : "مخفی کردن در اینستاگرام"}
+                                  </button>
+                                  {post?.permalink && (
+                                    <a role="menuitem" href={post.permalink} target="_blank" rel="noreferrer" onClick={() => setMenuFor(null)}>
+                                      <Heart size={14} /> لایک در اینستاگرام (باز کردن پست)
+                                    </a>
+                                  )}
+                                  <button role="menuitem" className="danger" disabled={moderate.isPending} onClick={() => moderateComment(eventId, "delete")}>
+                                    <Trash2 size={14} /> حذف از اینستاگرام
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <span className="message-time">
                           {message.from === "agent" ? (message.via === "dm" ? "دایرکت سپند" : kind === "comment" ? "پاسخ زیر کامنت" : "سپند") : selectedThread.name} · {clock(message.at)}
+                          {message.deleted && " · حذف شد"}
+                          {message.hidden && !message.deleted && " · مخفی در اینستاگرام"}
+                          {message.customerReaction && ` · مشتری ${message.customerReaction} گذاشت`}
                           {message.status === "pending" && " · منتظر تأیید"}
                           {message.status === "sending" && " · در حال ارسال"}
                           {message.status === "failed" && <b className="error-text"> · ارسال نشد{message.error ? `: ${message.error}` : ""}</b>}
