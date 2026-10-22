@@ -385,7 +385,8 @@ function procedures(): array
             $mediaId = media_id_input($in);
             $accountId = allowed_account_ids()[0] ?? '';
             if ($accountId === '') throw new ApiError('PRECONDITION_FAILED', 'ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید');
-            return meta_call(function () use ($mediaId, $accountId) { return import_post_comments($mediaId, $accountId); });
+            $after = isset($in['after']) && is_string($in['after']) && $in['after'] !== '' ? substr($in['after'], 0, 1000) : null;
+            return meta_call(function () use ($mediaId, $accountId, $after) { return import_post_comments($mediaId, $accountId, true, false, $after); });
         })],
 
         // Secrets are write-only: only a masked preview is returned, except the verify token,

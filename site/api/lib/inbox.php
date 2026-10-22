@@ -4,7 +4,7 @@
 declare(strict_types=1);
 
 const TONES = ['orange', 'gold', 'blue', 'green', 'violet'];
-const THREAD_EVENT_LIMIT = 2000;
+const THREAD_EVENT_LIMIT = 5000;
 
 function event_row(array $row): array
 {
@@ -693,25 +693,70 @@ function post_comments(string $mediaId): array
 }
 
 /** Imports a post's existing comments. Rules draft replies, but old comments always wait for approval. */
-function import_post_comments(string $mediaId, string $accountId, bool $draft = true, bool $read = false): array
+/**
+ * Reads one slice of a post's comments (pass $after = the previous 'next' to continue, until it is
+ * null) and stores the new ones, threaded replies from customers included. Comments that already
+ * have our reply on Instagram, from this app or the Instagram app itself, are recorded as answered,
+ * so no draft is made for them and stale public drafts are dropped.
+ */
+function import_post_comments(string $mediaId, string $accountId, bool $draft = true, bool $read = false, ?string $after = null): array
 {
-    $comments = list_media_comments($mediaId);
+    $page = list_media_comments($mediaId, $after);
+    $comments = $page['comments'];
     // Meta can leave out a comment's author; then the account's own comments are recognised by username.
-    $own = in_array(null, array_column($comments, 'fromId'), true) ? own_username() : null;
-    $events = [];
-    $skippedOwn = 0;
+    $anyUnknown = false;
     foreach ($comments as $c) {
-        if (($c['fromId'] !== null && $c['fromId'] === $accountId) || ($own !== null && $c['username'] === $own)) {
-            $skippedOwn++;
-            continue;
-        }
+        if ($c['fromId'] === null) $anyUnknown = true;
+        foreach ($c['replies'] as $r) if ($r['fromId'] === null) $anyUnknown = true;
+    }
+    $ownName = $anyUnknown ? own_username() : null;
+    $isOwn = function (array $c) use ($accountId, $ownName): bool {
+        return ($c['fromId'] !== null && $c['fromId'] === $accountId) || ($ownName !== null && $c['username'] === $ownName);
+    };
+    $toEvent = function (array $c) use ($accountId, $mediaId): array {
         // Replies and private DMs only need the comment id, so an unknown author is no reason to skip.
         $senderId = $c['fromId'] ?? ($c['username'] !== null ? 'u:' . $c['username'] : 'c:' . $c['id']);
-        $events[] = ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $senderId, 'username' => $c['username'],
+        return ['accountId' => $accountId, 'kind' => 'comment', 'externalId' => $c['id'], 'senderId' => $senderId, 'username' => $c['username'],
             'text' => $c['text'], 'mediaId' => $mediaId, 'at' => $c['at']];
+    };
+    $open = [];
+    $answered = [];
+    $skippedOwn = 0;
+    $fetched = 0;
+    foreach ($comments as $c) {
+        $thread = array_merge([$c], $c['replies']);
+        foreach ($thread as $i => $m) {
+            // Our own replies in a thread are answers, not comments to count or skip.
+            if ($isOwn($m)) { if ($i === 0) { $skippedOwn++; $fetched++; } continue; }
+            $fetched++;
+            // Our own reply anywhere after a message in the thread answers it.
+            $answer = null;
+            foreach (array_slice($thread, $i + 1) as $later) if ($isOwn($later)) { $answer = $later; break; }
+            if ($answer) $answered[] = ['event' => $toEvent($m), 'answer' => $answer];
+            else $open[] = $toEvent($m);
+        }
     }
-    $result = ingest_events($events, false, $draft, $read);
-    return ['fetched' => count($comments), 'imported' => $result['stored'], 'alreadyThere' => $result['duplicates'], 'own' => $skippedOwn];
+    $fresh = ingest_events($open, false, $draft, $read);
+    $known = ingest_events(array_column($answered, 'event'), false, false, $read);
+    $marked = 0;
+    $pdo = db();
+    $find = $pdo->prepare("SELECT id, createdAt FROM igEvents WHERE accountId = ? AND kind = 'comment' AND externalId = ?");
+    foreach ($answered as $a) {
+        $find->execute([$accountId, $a['event']['externalId']]);
+        $row = $find->fetch();
+        if (!$row) continue;
+        $eventId = (int) $row['id'];
+        // Drafts for a comment that was answered on Instagram would answer it twice.
+        $pdo->prepare("UPDATE replies SET status = 'rejected' WHERE eventId = ? AND status = 'pending' AND channel = 'reply'")->execute([$eventId]);
+        $sent = $pdo->prepare("SELECT COUNT(*) FROM replies WHERE eventId = ? AND channel = 'reply' AND status = 'sent'");
+        $sent->execute([$eventId]);
+        if ((int) $sent->fetchColumn() > 0) continue;
+        $pdo->prepare("INSERT INTO replies (eventId, source, channel, text, status, externalId, sentAt) VALUES (?, 'manual', 'reply', ?, 'sent', ?, ?)")
+            ->execute([$eventId, $a['answer']['text'], $a['answer']['id'], $a['answer']['at'] ?? $row['createdAt']]);
+        $marked++;
+    }
+    return ['fetched' => $fetched, 'imported' => $fresh['stored'] + $known['stored'], 'alreadyThere' => $fresh['duplicates'] + $known['duplicates'],
+        'own' => $skippedOwn, 'answered' => $marked, 'next' => $page['next']];
 }
 
 /** Posts whose comments the history import reads; each one is a Graph call. */
@@ -735,13 +780,14 @@ function import_history(string $accountId): array
 
     sync_posts();
     $posts = db()->query("SELECT id, commentsCount FROM igMedia WHERE commentsCount > 0 ORDER BY postedAt DESC LIMIT " . HISTORY_POSTS)->fetchAll();
-    $comments = ['posts' => count($posts), 'reported' => 0, 'fetched' => 0, 'imported' => 0, 'hidden' => 0];
+    $comments = ['posts' => count($posts), 'reported' => 0, 'fetched' => 0, 'imported' => 0, 'hidden' => 0, 'more' => 0];
     foreach ($posts as $post) {
         $result = import_post_comments($post['id'], $accountId, false, true);
         $comments['reported'] += (int) $post['commentsCount'];
         $comments['fetched'] += $result['fetched'];
         $comments['imported'] += $result['imported'];
         if (!$result['fetched']) $comments['hidden'] += (int) $post['commentsCount'];
+        if ($result['next']) $comments['more']++;
     }
 
     $dms = ['fetched' => 0, 'imported' => 0, 'error' => null];
