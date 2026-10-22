@@ -19,6 +19,9 @@ function event_row(array $row): array
         'mediaId' => $row['mediaId'],
         'ruleId' => $row['ruleId'] === null ? null : (int) $row['ruleId'],
         'isRead' => (bool) $row['isRead'],
+        'reaction' => $row['reaction'] ?? null,
+        'hidden' => (bool) ($row['hidden'] ?? false),
+        'deleted' => (bool) ($row['deleted'] ?? false),
         'createdAt' => db_time($row['createdAt']),
     ];
 }
@@ -36,6 +39,8 @@ function reply_row(array $row): array
         'status' => $row['status'],
         'error' => $row['error'],
         'decidedBy' => $row['decidedBy'] === null ? null : (int) $row['decidedBy'],
+        'externalId' => $row['externalId'] ?? null,
+        'customerReaction' => $row['customerReaction'] ?? null,
         'createdAt' => db_time($row['createdAt']),
         'sentAt' => db_time($row['sentAt']),
     ];
@@ -312,10 +317,10 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
 
     $text = trim($editedText ?? $reply['text']);
     $buttons = $reply['quickReplies'] ?: null;
-    $send = function (string $body, ?array $quickReplies) use ($reply, $event) {
-        if ($reply['channel'] === 'private') send_private_reply($event['externalId'], $body, $quickReplies);
-        elseif ($event['kind'] === 'comment') reply_to_comment($event['externalId'], $body);
-        else send_direct_message($event['senderId'], $body, $quickReplies);
+    $send = function (string $body, ?array $quickReplies) use ($reply, $event): array {
+        if ($reply['channel'] === 'private') return send_private_reply($event['externalId'], $body, $quickReplies);
+        if ($event['kind'] === 'comment') return reply_to_comment($event['externalId'], $body);
+        return send_direct_message($event['senderId'], $body, $quickReplies);
     };
     try {
         if ($text === '') throw new MetaApiError('متن پاسخ خالی است');
@@ -326,14 +331,16 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
             throw new MetaApiError($reply['channel'] === 'private' ? PRIVATE_WINDOW_CLOSED : DM_WINDOW_CLOSED);
         }
         try {
-            $send($text, $buttons);
+            $result = $send($text, $buttons);
         } catch (MetaApiError $e) {
             // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
             if (!$buttons) throw $e;
             $text = options_as_text($text, $buttons);
-            $send($text, null);
+            $result = $send($text, null);
         }
-        db()->prepare("UPDATE replies SET text = ?, status = 'sent', error = NULL, decidedBy = ?, sentAt = UTC_TIMESTAMP() WHERE id = ?")->execute([$text, $operatorId, $replyId]);
+        // Kept so a customer's reaction to this DM (message_reactions webhook) finds it.
+        $externalId = isset($result['message_id']) ? (string) $result['message_id'] : (isset($result['id']) ? (string) $result['id'] : null);
+        db()->prepare("UPDATE replies SET text = ?, status = 'sent', error = NULL, decidedBy = ?, sentAt = UTC_TIMESTAMP(), externalId = ? WHERE id = ?")->execute([$text, $operatorId, $externalId, $replyId]);
         return ['ok' => true];
     } catch (Throwable $e) {
         $message = $e instanceof MetaApiError ? $e->getMessage() : 'خطای داخلی هنگام ارسال';
@@ -371,6 +378,43 @@ function move_to_public_reply(int $replyId, int $operatorId, ?string $editedText
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
     db()->prepare("UPDATE replies SET channel = 'reply', source = 'manual', quickReplies = NULL, text = ?, status = 'pending', error = NULL, decidedBy = ? WHERE id = ?")
         ->execute([$text, $operatorId, $replyId]);
+}
+
+/** Puts our heart on a customer's DM, or takes it off. */
+function react_to_event(int $eventId, bool $on): void
+{
+    $event = get_event($eventId);
+    if (!$event || $event['kind'] !== 'dm') throw new ApiError('CONFLICT', 'فقط روی دایرکت می‌شود ریکشن گذاشت');
+    react_to_message($event['senderId'], $event['externalId'], $on);
+    db()->prepare("UPDATE igEvents SET reaction = ? WHERE id = ?")->execute([$on ? 'love' : null, $eventId]);
+}
+
+/** Hides, shows again or deletes a customer's comment on Instagram. Deleting drops its pending drafts. */
+function moderate_comment(int $eventId, string $action, int $operatorId): void
+{
+    $event = get_event($eventId);
+    if (!$event || $event['kind'] !== 'comment') throw new ApiError('CONFLICT', 'فقط کامنت‌ها را می‌شود مخفی یا حذف کرد');
+    if ($event['deleted']) throw new ApiError('CONFLICT', 'این کامنت قبلاً حذف شده است');
+    if ($action === 'delete') {
+        delete_comment($event['externalId']);
+        db()->prepare("UPDATE igEvents SET deleted = 1 WHERE id = ?")->execute([$eventId]);
+        db()->prepare("UPDATE replies SET status = 'rejected', decidedBy = ? WHERE eventId = ? AND status = 'pending'")->execute([$operatorId, $eventId]);
+        return;
+    }
+    set_comment_hidden($event['externalId'], $action === 'hide');
+    db()->prepare("UPDATE igEvents SET hidden = ? WHERE id = ?")->execute([$action === 'hide' ? 1 : 0, $eventId]);
+}
+
+/** message_reactions webhook: the customer reacted to (or un-reacted from) one of our DMs. */
+function apply_customer_reactions(array $reactions): int
+{
+    $applied = 0;
+    $stmt = db()->prepare("UPDATE replies SET customerReaction = ? WHERE externalId = ?");
+    foreach ($reactions as $r) {
+        $stmt->execute([$r['emoji'], $r['mid']]);
+        $applied += $stmt->rowCount();
+    }
+    return $applied;
 }
 
 function reject_reply(int $replyId, int $operatorId): void
@@ -477,11 +521,13 @@ function build_threads(): array
             'lastEventId' => $event['id'],
             'messages' => $prev['messages'] ?? [],
         ];
-        $thread['messages'][] = ['id' => 'e' . $event['id'], 'from' => 'contact', 'text' => $event['text'], 'at' => $event['createdAt'], 'mediaId' => $event['mediaId']];
+        $thread['messages'][] = ['id' => 'e' . $event['id'], 'from' => 'contact', 'text' => $event['text'], 'at' => $event['createdAt'], 'mediaId' => $event['mediaId'],
+            'eventId' => $event['id'], 'reaction' => $event['reaction'], 'hidden' => $event['hidden'], 'deleted' => $event['deleted']];
         foreach ($byEvent[$event['id']] ?? [] as $reply) {
             if ($reply['status'] === 'pending') $thread['priority'] = true;
             if ($reply['status'] === 'pending' || $reply['status'] === 'rejected') continue; // drafts live in the approval queue
-            $message = ['id' => 'r' . $reply['id'], 'from' => 'agent', 'text' => $reply['text'], 'at' => $reply['sentAt'] ?? $reply['createdAt'], 'status' => $reply['status'], 'error' => $reply['error']];
+            $message = ['id' => 'r' . $reply['id'], 'from' => 'agent', 'text' => $reply['text'], 'at' => $reply['sentAt'] ?? $reply['createdAt'], 'status' => $reply['status'], 'error' => $reply['error'],
+                'customerReaction' => $reply['customerReaction']];
             if ($reply['channel'] === 'private') $message['via'] = 'dm';
             $thread['messages'][] = $message;
         }

@@ -123,6 +123,28 @@ function test_meta_connection(): array
 }
 
 /** DM to the author of a comment (Instagram "private reply"); once per comment, within 7 days. */
+/** Puts a heart on (or takes it off) a customer's DM. Instagram only sends the "love" reaction. */
+function react_to_message(string $recipientId, string $messageId, bool $on): array
+{
+    return graph_request('POST', '/me/messages', [
+        'recipient' => ['id' => $recipientId],
+        'sender_action' => $on ? 'react' : 'unreact',
+        'payload' => $on ? ['message_id' => $messageId, 'reaction' => 'love'] : ['message_id' => $messageId],
+    ]);
+}
+
+/** Hides (or shows again) a comment under one of our posts. A hidden comment can't be replied to. */
+function set_comment_hidden(string $commentId, bool $hidden): array
+{
+    return graph_request('POST', '/' . rawurlencode($commentId), ['hide' => $hidden]);
+}
+
+/** Deletes a comment under one of our posts on Instagram. */
+function delete_comment(string $commentId): array
+{
+    return graph_request('DELETE', '/' . rawurlencode($commentId));
+}
+
 function send_private_reply(string $commentId, string $text, ?array $quickReplies = null): array
 {
     return graph_request('POST', '/me/messages', ['recipient' => ['comment_id' => $commentId], 'message' => with_quick_replies($text, $quickReplies)]);
@@ -137,6 +159,8 @@ function media_owner(): string
 }
 
 const WEBHOOK_FIELDS = ['comments', 'messages'];
+/** Wanted but not required: customers' reactions to our DMs. */
+const OPTIONAL_WEBHOOK_FIELDS = ['message_reactions'];
 
 function require_instagram_login(): void
 {
@@ -160,7 +184,12 @@ function get_webhook_subscription(): array
 function subscribe_webhooks(): array
 {
     require_instagram_login();
-    graph_request('POST', '/me/subscribed_apps?subscribed_fields=' . implode(',', WEBHOOK_FIELDS));
+    try {
+        graph_request('POST', '/me/subscribed_apps?subscribed_fields=' . implode(',', array_merge(WEBHOOK_FIELDS, OPTIONAL_WEBHOOK_FIELDS)));
+    } catch (MetaApiError $e) {
+        // An optional field Meta refuses must not cost us comments and messages.
+        graph_request('POST', '/me/subscribed_apps?subscribed_fields=' . implode(',', WEBHOOK_FIELDS));
+    }
     return get_webhook_subscription();
 }
 
