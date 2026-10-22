@@ -477,7 +477,7 @@ function build_threads(): array
             'lastEventId' => $event['id'],
             'messages' => $prev['messages'] ?? [],
         ];
-        $thread['messages'][] = ['id' => 'e' . $event['id'], 'from' => 'contact', 'text' => $event['text'], 'at' => $event['createdAt']];
+        $thread['messages'][] = ['id' => 'e' . $event['id'], 'from' => 'contact', 'text' => $event['text'], 'at' => $event['createdAt'], 'mediaId' => $event['mediaId']];
         foreach ($byEvent[$event['id']] ?? [] as $reply) {
             if ($reply['status'] === 'pending') $thread['priority'] = true;
             if ($reply['status'] === 'pending' || $reply['status'] === 'rejected') continue; // drafts live in the approval queue

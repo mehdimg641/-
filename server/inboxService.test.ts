@@ -155,6 +155,8 @@ describe("comment → reply + DM per post", () => {
     expect((await listApprovals(store)).map((a) => a.replyChannel)).toEqual(["reply", "private"]);
     const [post] = await listPosts(store);
     expect(post).toMatchObject({ id: "m1", comments: 1, pending: 2, rules: 1, synced: false });
+    // The inbox shows each comment with the post it was left under.
+    expect((await buildThreads(store))[0].messages[0]).toMatchObject({ from: "contact", mediaId: "m1" });
   });
 
   it("drafts replies for messages that arrived before the rule existed, without sending", async () => {

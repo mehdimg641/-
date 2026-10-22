@@ -8,6 +8,7 @@ require "$lib/superjson.php";
 require "$lib/settings.php";
 require "$lib/rules.php";
 require "$lib/meta_webhook.php";
+require "$lib/graph.php";
 
 function test_config_secret(): string { return 'unit-test-secret-unit-test-secret-1234'; }
 $GLOBALS['fails'] = 0;
@@ -60,5 +61,11 @@ if ($nodeCipher = getenv('NODE_CIPHER')) check('decrypts Node.js ciphertext', de
 check('mask', mask_secret('IGAAabcdefghijklmnop'), 'IGAA…mnop');
 
 unlink($tmp);
+
+check('meta error: deleted comment', describe_meta_error(400, ['message' => "Object with ID '1' does not exist", 'code' => 100, 'error_subcode' => 33, 'fbtrace_id' => 'AbC']),
+    "این کامنت یا پیام دیگر وجود ندارد (احتمالاً حذف شده) یا با این توکن قابل دسترسی نیست. — Meta API 400: Object with ID '1' does not exist (کد 100/33 · trace AbC)");
+check('meta error: temporary', describe_meta_error(500, ['message' => 'An unknown error has occurred.', 'code' => 1, 'fbtrace_id' => 'Xy']),
+    'خطای موقت سرور اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید. — Meta API 500: An unknown error has occurred. (کد 1 · trace Xy)');
+check('meta error: plain', describe_meta_error(400, ['message' => 'Error validating access token']), 'Meta API 400: Error validating access token');
 echo $GLOBALS['fails'] ? "\n{$GLOBALS['fails']} failed\n" : "\nall passed\n";
 exit($GLOBALS['fails'] ? 1 : 0);

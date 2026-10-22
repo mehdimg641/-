@@ -49,15 +49,36 @@ function graph_request(string $method, string $path, ?array $body = null): array
     }
     $data = parse_graph_json((string) $text);
     if ($status < 200 || $status >= 300) {
-        $message = $data['error']['message'] ?? substr((string) $text, 0, 300);
-        $code = $data['error']['code'] ?? null;
-        $subcode = $data['error']['error_subcode'] ?? null;
-        if ((int) $subcode === 2534022 || ((int) $code === 10 && stripos($message, 'allowed window') !== false)) {
-            throw new MetaApiError('مهلت ارسال اینستاگرام گذشته (دایرکت: ۲۴ ساعت بعد از آخرین پیام مشتری؛ دایرکت به نویسندهٔ کامنت: ۷ روز بعد از کامنت).');
-        }
-        throw new MetaApiError("Meta API $status: $message");
+        throw new MetaApiError(describe_meta_error($status, ($data['error'] ?? []) + ['message' => substr((string) $text, 0, 300)]));
     }
     return $data;
+}
+
+/**
+ * Meta's error in Persian for the cases an operator can act on, keeping Meta's own text, code and
+ * trace id after it so an unknown failure can still be looked up.
+ */
+function describe_meta_error(int $status, array $error): string
+{
+    $message = (string) ($error['message'] ?? '');
+    $code = isset($error['code']) ? (int) $error['code'] : null;
+    $subcode = isset($error['error_subcode']) ? (int) $error['error_subcode'] : null;
+    if ($subcode === 2534022 || ($code === 10 && stripos($message, 'allowed window') !== false)) {
+        return 'مهلت ارسال اینستاگرام گذشته (دایرکت: ۲۴ ساعت بعد از آخرین پیام مشتری؛ دایرکت به نویسندهٔ کامنت: ۷ روز بعد از کامنت).';
+    }
+    $hint = '';
+    if ($subcode === 2534025) $hint = 'این کامنت قابل پاسخ خصوصی نیست (قبلاً دایرکت گرفته، یا مال یک صفحهٔ دیگر است).';
+    elseif ($code === 551 || $subcode === 1545041) $hint = 'این کاربر در دسترس نیست (پیج را مسدود کرده یا تنظیمات حریم خصوصی‌اش اجازه نمی‌دهد).';
+    elseif ($subcode === 33 || preg_match('/does not exist|cannot be loaded/i', $message)) $hint = 'این کامنت یا پیام دیگر وجود ندارد (احتمالاً حذف شده) یا با این توکن قابل دسترسی نیست.';
+    elseif ($code === 190) $hint = 'توکن اینستاگرام نامعتبر یا منقضی شده؛ در تنظیمات توکن جدید بگذارید.';
+    elseif (in_array($code, [4, 17, 32, 613], true)) $hint = 'محدودیت تعداد درخواست اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید.';
+    elseif ($code === 1 || $code === 2 || $status >= 500) $hint = 'خطای موقت سرور اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید.';
+    $details = array_filter([
+        $code !== null ? 'کد ' . $code . ($subcode ? '/' . $subcode : '') : '',
+        !empty($error['fbtrace_id']) ? 'trace ' . $error['fbtrace_id'] : '',
+    ]);
+    $raw = "Meta API $status: " . (!empty($error['error_user_msg']) ? $error['error_user_msg'] : $message) . ($details ? ' (' . implode(' · ', $details) . ')' : '');
+    return $hint !== '' ? "$hint — $raw" : $raw;
 }
 
 function reply_to_comment(string $commentId, string $message): array

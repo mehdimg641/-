@@ -12,6 +12,8 @@ export type InboxMessage = {
   error?: string | null;
   /** "dm": a private reply sent to a commenter's inbox. */
   via?: "dm";
+  /** Contact messages on a comment: the post it was left under. */
+  mediaId?: string | null;
 };
 
 export type InboxThread = {
@@ -96,6 +98,12 @@ export function isUnanswered(thread: InboxThread) {
   });
   if (lastContact < 0) return false;
   return !thread.messages.slice(lastContact + 1).some((m) => m.from === "agent" && m.status === "sent");
+}
+
+/** When the DM window closes: 24 hours after the customer's latest message; null when they never wrote. */
+export function dmWindowEnd(thread: InboxThread): Date | null {
+  const last = thread.messages.filter((m) => m.from === "contact").reduce<Date | null>((latest, m) => (!latest || m.at > latest ? m.at : latest), null);
+  return last ? new Date(last.getTime() + DM_WINDOW_MS) : null;
 }
 
 export function filterInboxThreads(

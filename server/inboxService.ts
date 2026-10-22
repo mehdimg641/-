@@ -385,7 +385,7 @@ export async function buildThreads(store: InboxStore): Promise<InboxThread[]> {
       lastEventId: event.id,
       messages: previous?.messages ?? [],
     };
-    thread.messages.push({ id: `e${event.id}`, from: "contact", text: event.text, at: event.createdAt });
+    thread.messages.push({ id: `e${event.id}`, from: "contact", text: event.text, at: event.createdAt, mediaId: event.mediaId });
     for (const reply of (repliesByEvent.get(event.id) ?? []).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
       if (reply.status === "pending") thread.priority = true;
       if (reply.status === "pending" || reply.status === "rejected") continue; // drafts live in the approval queue

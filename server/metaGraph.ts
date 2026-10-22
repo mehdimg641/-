@@ -23,6 +23,28 @@ function graphBase() {
 
 export class MetaApiError extends Error {}
 
+type MetaErrorBody = { message?: string; code?: number; error_subcode?: number; error_user_msg?: string; fbtrace_id?: string };
+
+/**
+ * Meta's error in Persian for the cases an operator can act on, keeping Meta's own text, code and
+ * trace id after it so an unknown failure can still be looked up.
+ */
+export function describeMetaError(status: number, error: MetaErrorBody) {
+  const message = error.message ?? "";
+  const { code, error_subcode: subcode } = error;
+  if (subcode === 2534022 || (code === 10 && /allowed window/i.test(message))) return WINDOW_CLOSED;
+  let hint = "";
+  if (subcode === 2534025) hint = "این کامنت قابل پاسخ خصوصی نیست (قبلاً دایرکت گرفته، یا مال یک صفحهٔ دیگر است).";
+  else if (code === 551 || subcode === 1545041) hint = "این کاربر در دسترس نیست (پیج را مسدود کرده یا تنظیمات حریم خصوصی‌اش اجازه نمی‌دهد).";
+  else if (subcode === 33 || /does not exist|cannot be loaded/i.test(message)) hint = "این کامنت یا پیام دیگر وجود ندارد (احتمالاً حذف شده) یا با این توکن قابل دسترسی نیست.";
+  else if (code === 190) hint = "توکن اینستاگرام نامعتبر یا منقضی شده؛ در تنظیمات توکن جدید بگذارید.";
+  else if (code === 4 || code === 17 || code === 32 || code === 613) hint = "محدودیت تعداد درخواست اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید.";
+  else if (code === 1 || code === 2 || status >= 500) hint = "خطای موقت سرور اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید.";
+  const details = [code !== undefined ? `کد ${code}${subcode ? `/${subcode}` : ""}` : "", error.fbtrace_id ? `trace ${error.fbtrace_id}` : ""].filter(Boolean).join(" · ");
+  const raw = `Meta API ${status}: ${error.error_user_msg || message}${details ? ` (${details})` : ""}`;
+  return hint ? `${hint} — ${raw}` : raw;
+}
+
 async function graphRequest(method: "GET" | "POST", path: string, body?: Record<string, unknown>) {
   await refreshMetaSettings();
   const token = metaSetting("META_ACCESS_TOKEN");
@@ -42,17 +64,11 @@ async function graphRequest(method: "GET" | "POST", path: string, body?: Record<
   }
   const text = await response.text();
   if (!response.ok) {
-    let message = text.slice(0, 300);
-    let code: number | undefined;
-    let subcode: number | undefined;
+    let error: MetaErrorBody = { message: text.slice(0, 300) };
     try {
-      const error = (JSON.parse(text) as { error?: { message?: string; code?: number; error_subcode?: number } }).error;
-      message = error?.message ?? message;
-      code = error?.code;
-      subcode = error?.error_subcode;
+      error = { ...error, ...(JSON.parse(text) as { error?: MetaErrorBody }).error };
     } catch {}
-    if (subcode === 2534022 || (code === 10 && /allowed window/i.test(message))) throw new MetaApiError(WINDOW_CLOSED);
-    throw new MetaApiError(`Meta API ${response.status}: ${message}`);
+    throw new MetaApiError(describeMetaError(response.status, error));
   }
   return text ? parseGraphJson(text) : {};
 }

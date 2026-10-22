@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
+import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, MessageCircle, MessageSquareText, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
@@ -12,13 +12,14 @@ import { TemplatesView } from "./inbox/TemplatesView";
 import { errorMessage, faNum, IconButton, relativeTime } from "./inbox/ui";
 import { APP_BUILD } from "@/version";
 
-type Tab = "inbox" | "posts" | "automation" | "templates" | "analytics" | "settings";
+type Tab = "comments" | "dms" | "posts" | "automation" | "templates" | "analytics" | "settings";
 
 const POLL_MS = 15_000;
 const LOCAL_AUTH = import.meta.env.VITE_AUTH_MODE === "local";
 
 const navItems: { id: Tab; label: string; icon: typeof Inbox }[] = [
-  { id: "inbox", label: "صندوق ورودی", icon: Inbox },
+  { id: "comments", label: "کامنت‌ها", icon: MessageSquareText },
+  { id: "dms", label: "دایرکت‌ها", icon: MessageCircle },
   { id: "posts", label: "پست‌ها", icon: ImageIcon },
   { id: "automation", label: "اتوماسیون", icon: Workflow },
   { id: "templates", label: "قالب پاسخ‌ها", icon: Library },
@@ -72,7 +73,13 @@ export default function Home() {
 }
 
 function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => void }) {
-  const [tab, setTab] = useState<Tab>("inbox");
+  const [tab, setTab] = useState<Tab>("comments");
+  // Where «بازگشت» and template "use" go: the inbox view the operator was last in.
+  const [lastInbox, setLastInbox] = useState<"comments" | "dms">("comments");
+  const go = (next: Tab) => {
+    if (next === "comments" || next === "dms") setLastInbox(next);
+    setTab(next);
+  };
   const [composer, setComposer] = useState("");
 
   // Polled so an update installed on the server is noticed without a manual refresh.
@@ -83,10 +90,13 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
   const approvals = trpc.approvals.list.useQuery(undefined, { refetchInterval: POLL_MS });
   const stats = trpc.inbox.stats.useQuery(undefined, { enabled: tab === "analytics" });
 
-  const unread = threads.data?.filter((thread) => thread.unread).length ?? 0;
+  const unreadOf = (kind: "comment" | "dm") => threads.data?.filter((thread) => thread.kind === kind && thread.unread).length ?? 0;
   const pending = approvals.data?.length ?? 0;
   const connected = Boolean(status.data?.metaConfigured);
-  const badge = (id: Tab) => (id === "inbox" && unread ? faNum(unread) : id === "automation" && pending ? faNum(pending) : null);
+  const badge = (id: Tab) => {
+    const count = id === "comments" ? unreadOf("comment") : id === "dms" ? unreadOf("dm") : id === "automation" ? pending : 0;
+    return count ? faNum(count) : null;
+  };
 
   return (
     <div className="app-shell" dir="rtl">
@@ -106,7 +116,7 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             const Icon = item.icon;
             const count = badge(item.id);
             return (
-              <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => setTab(item.id)}>
+              <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => go(item.id)}>
                 <Icon size={18} strokeWidth={1.9} />
                 <span>{item.label}</span>
                 {count && <small>{count}</small>}
@@ -144,20 +154,21 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
           </div>
         )}
 
-        {tab === "inbox" && (
+        {(tab === "comments" || tab === "dms") && (
           <InboxView
+            kind={tab === "comments" ? "comment" : "dm"}
             threads={threads.data ?? []}
             approvals={approvals.data ?? []}
             loading={threads.isLoading}
             autoReply={Boolean(status.data?.autoReply)}
             composer={composer}
             setComposer={setComposer}
-            onOpenAutomation={() => setTab("automation")}
+            onOpenAutomation={() => go("automation")}
           />
         )}
         {tab === "posts" && <PostsView />}
-        {tab === "automation" && <AutomationView approvals={approvals.data ?? []} autoReply={Boolean(status.data?.autoReply)} onBack={() => setTab("inbox")} />}
-        {tab === "templates" && <TemplatesView onUse={(text) => { setTab("inbox"); setComposer(text); }} />}
+        {tab === "automation" && <AutomationView approvals={approvals.data ?? []} autoReply={Boolean(status.data?.autoReply)} onBack={() => go(lastInbox)} />}
+        {tab === "templates" && <TemplatesView onUse={(text) => { go(lastInbox); setComposer(text); }} />}
         {tab === "analytics" && <AnalyticsView stats={stats.data} />}
         {tab === "settings" && <SettingsView status={status.data} />}
       </main>
