@@ -88,8 +88,9 @@ function meta_configured(): bool
     return meta_setting('META_WEBHOOK_VERIFY_TOKEN') !== '' && meta_setting('META_ACCESS_TOKEN') !== '' && meta_setting('META_APP_SECRET') !== '';
 }
 
-/** @return string[] */
-function allowed_account_ids(): array
+/** @return string[] the allowlist from Settings plus the connected pages; empty = accept every account */
+function allowed_account_ids(array $pages = []): array
 {
-    return array_values(array_filter(array_map('trim', explode(',', meta_setting('INSTAGRAM_ACCOUNT_IDS'))), 'strlen'));
+    $ids = array_values(array_filter(array_map('trim', explode(',', meta_setting('INSTAGRAM_ACCOUNT_IDS'))), 'strlen'));
+    return array_values(array_unique(array_merge($ids, array_map('strval', $pages))));
 }

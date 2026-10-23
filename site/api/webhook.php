@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/lib/bootstrap.php';
 require __DIR__ . '/lib/settings.php';
+require __DIR__ . '/lib/accounts.php';
 require __DIR__ . '/lib/rules.php';
 require __DIR__ . '/lib/graph.php';
 require __DIR__ . '/lib/meta_webhook.php';
@@ -74,9 +75,10 @@ if (($body['object'] ?? '') !== 'instagram') {
 // Store before acknowledging: on a storage error Meta gets a 5xx and retries later.
 $payload = describe_payload($body);
 try {
-    $events = extract_events($body);
+    $pages = array_column(enabled_accounts(), 'id');
+    $events = extract_events($body, $pages);
     $result = ingest_events($events);
-    apply_customer_reactions(extract_reactions($body));
+    apply_customer_reactions(extract_reactions($body, $pages));
     record_webhook('POST', 200, 'received', sprintf('accounts: %s | fields: %s | stored %d, duplicate %d, ignored %d',
         implode(',', $payload['accounts']) ?: '-', implode(',', $payload['fields']) ?: '-', $result['stored'], $result['duplicates'], $payload['items'] - count($events)), $payload['accounts']);
 } catch (Throwable $e) {

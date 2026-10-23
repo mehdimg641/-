@@ -34,9 +34,9 @@ function verify_signature(string $rawBody, ?string $header): bool
  * Turns a verified payload into inbox events. Skips our own comments and echoed DMs (replying
  * to them would loop), deleted messages, receipts, other fields and accounts not in the allowlist.
  */
-function extract_events(array $body): array
+function extract_events(array $body, array $pages = []): array
 {
-    $allowed = allowed_account_ids();
+    $allowed = allowed_account_ids($pages);
     $events = [];
     $seen = 0;
     foreach ($body['entry'] ?? [] as $entry) {
@@ -70,9 +70,9 @@ function extract_events(array $body): array
 const REACTION_EMOJI = ['love' => '❤️', 'like' => '👍', 'laugh' => '😂', 'wow' => '😮', 'sad' => '😢', 'angry' => '😡', 'smile' => '😊'];
 
 /** Customers' reactions to our DMs (message_reactions); our own reactions echo back and are skipped. */
-function extract_reactions(array $body): array
+function extract_reactions(array $body, array $pages = []): array
 {
-    $allowed = allowed_account_ids();
+    $allowed = allowed_account_ids($pages);
     $reactions = [];
     foreach ($body['entry'] ?? [] as $entry) {
         $accountId = isset($entry['id']) ? (string) $entry['id'] : '';

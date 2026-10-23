@@ -122,6 +122,11 @@ function ensure_schema(PDO $pdo): void
             `id` int AUTO_INCREMENT NOT NULL, `at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, `method` varchar(8) NOT NULL,
             `status` int NOT NULL, `outcome` varchar(32) NOT NULL, `detail` varchar(255) NOT NULL DEFAULT '', `accounts` varchar(255) NOT NULL DEFAULT '',
             PRIMARY KEY (`id`))",
+        "CREATE TABLE IF NOT EXISTS `igAccounts` (
+            `id` varchar(64) NOT NULL, `username` varchar(64), `name` varchar(120), `token` text NOT NULL,
+            `tokenExpiresAt` timestamp NULL, `tokenRefreshedAt` timestamp NULL, `lastError` text,
+            `enabled` boolean NOT NULL DEFAULT true, `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`))",
     ];
     // Columns added after the first release; older installs get them via ALTER TABLE.
     $columns = [
@@ -137,9 +142,13 @@ function ensure_schema(PDO $pdo): void
         ['igEvents', 'deleted', "ALTER TABLE `igEvents` ADD `deleted` boolean NOT NULL DEFAULT false"],
         ['replies', 'externalId', "ALTER TABLE `replies` ADD `externalId` varchar(191) NULL"],
         ['replies', 'customerReaction', "ALTER TABLE `replies` ADD `customerReaction` varchar(32) NULL"],
+        // Rules, templates and posts belong to one page (NULL: from before pages existed).
+        ['replyRules', 'accountId', "ALTER TABLE `replyRules` ADD `accountId` varchar(64) NULL"],
+        ['replyTemplates', 'accountId', "ALTER TABLE `replyTemplates` ADD `accountId` varchar(64) NULL"],
+        ['igMedia', 'accountId', "ALTER TABLE `igMedia` ADD `accountId` varchar(64) NULL"],
     ];
     // Cheap check first: skip the DDL once every table and column exists.
-    $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia','webhookLog')")->fetchColumn();
+    $haveTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('users','igEvents','replyRules','replies','appSettings','loginFailures','replyTemplates','igMedia','webhookLog','igAccounts')")->fetchColumn();
     $pairs = implode(' OR ', array_fill(0, count($columns), '(table_name = ? AND column_name = ?)'));
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND ($pairs)");
     $stmt->execute(array_merge(...array_map(function ($c) { return [$c[0], $c[1]]; }, $columns)));
