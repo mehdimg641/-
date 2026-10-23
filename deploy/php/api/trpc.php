@@ -10,6 +10,7 @@ require __DIR__ . '/lib/bootstrap.php';
 require __DIR__ . '/lib/superjson.php';
 require __DIR__ . '/lib/settings.php';
 require __DIR__ . '/lib/auth.php';
+require __DIR__ . '/lib/accounts.php';
 require __DIR__ . '/lib/rules.php';
 require __DIR__ . '/lib/graph.php';
 require __DIR__ . '/lib/meta_webhook.php';
@@ -175,6 +176,34 @@ function installed_version(): ?array
     return ['version' => (string) ($data['version'] ?? ''), 'commit' => (string) $data['commit'], 'builtAt' => (string) ($data['builtAt'] ?? '')];
 }
 
+function require_page(): string
+{
+    $page = active_page();
+    if ($page === null) throw new ApiError('PRECONDITION_FAILED', 'ابتدا یک پیج را در تنظیمات وصل کنید');
+    return $page;
+}
+
+function account_id_input(array $in, string $key = 'id'): string
+{
+    $id = req_str($in, $key, 1, 64);
+    if (!preg_match('/^[0-9]+$/', $id)) throw new ApiError('BAD_REQUEST', 'شناسهٔ پیج نامعتبر است');
+    return $id;
+}
+
+function token_input(array $in): string
+{
+    $token = req_str($in, 'token', 1, 1000);
+    if (strlen($token) < 20) throw new ApiError('BAD_REQUEST', 'توکن کامل نیست');
+    return $token;
+}
+
+/** A rule or template of the active page, or NOT_FOUND. */
+function page_row(array $rows, int $id, string $missing): array
+{
+    foreach ($rows as $row) if ($row['id'] === $id) return $row;
+    throw new ApiError('NOT_FOUND', $missing);
+}
+
 /** Optional secret field: missing = keep, null = clear, string = set. */
 function opt_secret(array $in, string $key, array &$patch, string $setting): void
 {
@@ -194,6 +223,22 @@ function procedures(): array
             return $fn(in_obj($input), $user);
         };
     };
+    // Admin procedures that work on one page: the dashboard's page (X-Sepand-Account) or the
+    // first connected one; Graph calls use its token. Before any page is connected nothing is filtered.
+    $page = function (callable $fn): callable {
+        return function ($input) use ($fn) {
+            $user = require_admin();
+            $requested = isset($_SERVER['HTTP_X_SEPAND_ACCOUNT']) ? trim((string) $_SERVER['HTTP_X_SEPAND_ACCOUNT']) : null;
+            $account = resolve_account($requested !== '' ? $requested : null);
+            $accountId = $account['id'] ?? (allowed_account_ids()[0] ?? null);
+            set_active_page($accountId);
+            try {
+                return with_account($accountId, function () use ($fn, $input, $user) { return $fn(in_obj($input), $user); });
+            } finally {
+                set_active_page(null);
+            }
+        };
+    };
     return [
         // [type, handler]
         'auth.me' => ['query', function () { return current_user(); }],
@@ -205,22 +250,28 @@ function procedures(): array
         'auth.logout' => ['mutation', function () { logout(); return ['success' => true]; }],
         'system.health' => ['query', function () { return ['ok' => true]; }],
 
-        'inbox.status' => ['query', $admin(function () {
-            return ['metaConfigured' => meta_configured(), 'autoReply' => auto_reply_enabled(), 'apiHost' => meta_api_host(), 'accountIds' => allowed_account_ids(), 'persistent' => true,
-                'lastEventAt' => db_time(db()->query("SELECT MAX(createdAt) FROM igEvents")->fetchColumn() ?: null),
+        'inbox.status' => ['query', $page(function () {
+            // Tokens stay alive without a cron: the dashboard polls this every few minutes.
+            refresh_due_token();
+            $pages = array_column(enabled_accounts(), 'id');
+            $args = [];
+            $last = db()->prepare("SELECT MAX(createdAt) FROM igEvents WHERE " . page_events_sql('accountId', active_page(), $args));
+            $last->execute($args);
+            return ['metaConfigured' => meta_configured() || (bool) $pages, 'autoReply' => auto_reply_enabled(), 'apiHost' => meta_api_host(),
+                'accountIds' => allowed_account_ids($pages), 'accountId' => active_page(), 'persistent' => true,
+                'lastEventAt' => db_time($last->fetchColumn() ?: null),
                 'serverVersion' => installed_version()];
         })],
-        'inbox.threads' => ['query', $admin(function () { return build_threads(); })],
+        'inbox.threads' => ['query', $page(function () { return build_threads(); })],
         // Pulls recent comments and DMs that arrived before the webhook worked.
-        'inbox.importHistory' => ['mutation', $admin(function () {
-            $accountId = allowed_account_ids()[0] ?? '';
-            if ($accountId === '') throw new ApiError('PRECONDITION_FAILED', 'ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید');
+        'inbox.importHistory' => ['mutation', $page(function () {
+            $accountId = require_page();
             return meta_call(function () use ($accountId) { return import_history($accountId); });
         })],
-        'inbox.stats' => ['query', $admin(function () { return inbox_stats(); })],
-        'inbox.markRead' => ['mutation', $admin(function ($in) {
+        'inbox.stats' => ['query', $page(function () { return inbox_stats(); })],
+        'inbox.markRead' => ['mutation', $page(function ($in) {
             if (!in_array($in['kind'] ?? null, ['comment', 'dm'], true)) throw new ApiError('BAD_REQUEST', 'kind نامعتبر است');
-            mark_read($in['kind'], req_str($in, 'senderId', 1, 64));
+            mark_read(require_page(), $in['kind'], req_str($in, 'senderId', 1, 64));
             return ['success' => true];
         })],
         'inbox.react' => ['mutation', $admin(function ($in) {
@@ -237,7 +288,7 @@ function procedures(): array
             return send_manual_reply(req_int($in, 'eventId'), messages_input(req_str($in, 'text', 1, 4000)), $user['id']);
         })],
 
-        'approvals.list' => ['query', $admin(function () { return list_approvals(); })],
+        'approvals.list' => ['query', $page(function () { return list_approvals(); })],
         'approvals.approve' => ['mutation', $admin(function ($in, $user) {
             $text = array_key_exists('text', $in) && $in['text'] !== null ? req_str($in, 'text', 1, 1000) : null;
             return send_reply(req_int($in, 'id'), $user['id'], $text);
@@ -309,17 +360,16 @@ function procedures(): array
             return ['success' => true];
         })],
 
-        'rules.list' => ['query', $admin(function () { return list_rules(); })],
-        'rules.create' => ['mutation', $admin(function ($in) {
+        'rules.list' => ['query', $page(function () { return list_rules(); })],
+        'rules.create' => ['mutation', $page(function ($in) {
             $rule = rule_input($in, false);
             assert_rule_replies($rule);
             $created = get_rule(insert_rule($rule));
             return $created + ['redrafted' => redraft_pending()['updated']];
         })],
-        'rules.update' => ['mutation', $admin(function ($in) {
+        'rules.update' => ['mutation', $page(function ($in) {
             $id = req_int($in, 'id');
-            $current = get_rule($id);
-            if (!$current) throw new ApiError('NOT_FOUND', 'قانون پیدا نشد');
+            $current = page_row(list_rules(), $id, 'قانون پیدا نشد');
             $patch = rule_input(in_obj($in['patch'] ?? []), true);
             assert_rule_replies(array_merge($current, $patch));
             $rule = update_rule($id, $patch);
@@ -327,7 +377,7 @@ function procedures(): array
             return $rule + ['redrafted' => redraft_pending()['updated']];
         })],
         // Which rules a sample message would trigger, in order, and the reply the first one drafts.
-        'rules.test' => ['query', $admin(function ($in) {
+        'rules.test' => ['query', $page(function ($in) {
             if (!in_array($in['channel'] ?? null, ['comment', 'dm'], true)) throw new ApiError('BAD_REQUEST', 'کانال نامعتبر است');
             $text = req_str($in, 'text', 1, 1000);
             $mediaId = ($in['mediaId'] ?? null) === null ? null : media_id_input($in);
@@ -343,20 +393,26 @@ function procedures(): array
             ];
         })],
         // Drafts replies for messages that arrived before a matching rule existed.
-        'rules.applyToUnanswered' => ['mutation', $admin(function () { return apply_rules_to_unanswered(); })],
-        'rules.delete' => ['mutation', $admin(function ($in) {
-            db()->prepare("DELETE FROM replyRules WHERE id = ?")->execute([req_int($in, 'id')]);
+        'rules.applyToUnanswered' => ['mutation', $page(function () { return apply_rules_to_unanswered(); })],
+        'rules.delete' => ['mutation', $page(function ($in) {
+            $id = page_row(list_rules(), req_int($in, 'id'), 'قانون پیدا نشد')['id'];
+            db()->prepare("DELETE FROM replyRules WHERE id = ?")->execute([$id]);
             return ['success' => true, 'redrafted' => redraft_pending()['updated']];
         })],
+        // A new page starts with another page's rules and templates.
+        'rules.copyFrom' => ['mutation', $page(function ($in) {
+            $result = copy_rules_from(account_id_input($in, 'fromAccountId'), require_page());
+            return $result + ['redrafted' => redraft_pending()['updated']];
+        })],
 
-        'templates.list' => ['query', $admin(function () { return list_templates(); })],
-        'templates.create' => ['mutation', $admin(function ($in) {
+        'templates.list' => ['query', $page(function () { return list_templates(); })],
+        'templates.create' => ['mutation', $page(function ($in) {
             $t = template_input($in, false);
-            db()->prepare("INSERT INTO replyTemplates (title, category, text) VALUES (?, ?, ?)")->execute([$t['title'], $t['category'], $t['text']]);
+            db()->prepare("INSERT INTO replyTemplates (accountId, title, category, text) VALUES (?, ?, ?, ?)")->execute([active_page(), $t['title'], $t['category'], $t['text']]);
             return get_template((int) db()->lastInsertId());
         })],
-        'templates.update' => ['mutation', $admin(function ($in) {
-            $id = req_int($in, 'id');
+        'templates.update' => ['mutation', $page(function ($in) {
+            $id = page_row(list_templates(), req_int($in, 'id'), 'قالب پیدا نشد')['id'];
             $patch = template_input(in_obj($in['patch'] ?? []), true);
             if ($patch) {
                 $sets = implode(', ', array_map(function ($f) { return "`$f` = ?"; }, array_keys($patch)));
@@ -367,8 +423,8 @@ function procedures(): array
             // Rules that use this template now draft the new text.
             return $template + ['redrafted' => redraft_pending()['updated']];
         })],
-        'templates.delete' => ['mutation', $admin(function ($in) {
-            $id = req_int($in, 'id');
+        'templates.delete' => ['mutation', $page(function ($in) {
+            $id = page_row(list_templates(), req_int($in, 'id'), 'قالب پیدا نشد')['id'];
             foreach (list_rules() as $rule) {
                 if ($rule['templateId'] === $id || $rule['dmTemplateId'] === $id) {
                     throw new ApiError('CONFLICT', "این قالب در قانون «{$rule['name']}» استفاده شده؛ ابتدا قانون را تغییر دهید");
@@ -378,15 +434,37 @@ function procedures(): array
             return ['success' => true];
         })],
 
-        'posts.list' => ['query', $admin(function () { return list_posts(); })],
-        'posts.sync' => ['mutation', $admin(function () { return meta_call('sync_posts'); })],
-        'posts.comments' => ['query', $admin(function ($in) { return post_comments(media_id_input($in)); })],
-        'posts.importComments' => ['mutation', $admin(function ($in) {
+        'posts.list' => ['query', $page(function () { return list_posts(); })],
+        'posts.sync' => ['mutation', $page(function () { return meta_call('sync_posts'); })],
+        'posts.comments' => ['query', $page(function ($in) { return post_comments(media_id_input($in)); })],
+        'posts.importComments' => ['mutation', $page(function ($in) {
             $mediaId = media_id_input($in);
-            $accountId = allowed_account_ids()[0] ?? '';
-            if ($accountId === '') throw new ApiError('PRECONDITION_FAILED', 'ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید');
+            $accountId = require_page();
             $after = isset($in['after']) && is_string($in['after']) && $in['after'] !== '' ? substr($in['after'], 0, 1000) : null;
             return meta_call(function () use ($mediaId, $accountId, $after) { return import_post_comments($mediaId, $accountId, true, false, $after); });
+        })],
+
+        // Connected pages. Tokens are write-only: the dashboard only ever sees a masked preview.
+        'accounts.list' => ['query', $admin(function () { return array_map('account_summary', enabled_accounts()); })],
+        // Connects a page from its access token; Meta says which account it is.
+        'accounts.add' => ['mutation', $admin(function ($in) {
+            return meta_call(function () use ($in) { return add_account(token_input($in)); });
+        })],
+        'accounts.updateToken' => ['mutation', $admin(function ($in) {
+            return meta_call(function () use ($in) { return add_account(token_input($in), account_id_input($in)); });
+        })],
+        'accounts.refresh' => ['mutation', $admin(function ($in) {
+            $account = get_account(account_id_input($in));
+            if (!$account) throw new ApiError('NOT_FOUND', 'پیج پیدا نشد');
+            meta_call(function () use ($account) { refresh_account($account); });
+            return account_summary(get_account($account['id']));
+        })],
+        // Disconnects a page; its messages, rules and templates stay, and adding it again brings them back.
+        'accounts.remove' => ['mutation', $admin(function ($in) {
+            $id = account_id_input($in);
+            if (!get_account($id)) throw new ApiError('NOT_FOUND', 'پیج پیدا نشد');
+            db()->prepare("UPDATE igAccounts SET enabled = 0 WHERE id = ?")->execute([$id]);
+            return ['success' => true];
         })],
 
         // Secrets are write-only: only a masked preview is returned, except the verify token,
@@ -426,22 +504,35 @@ function procedures(): array
                 $patch['META_AUTO_REPLY'] = $in['autoReply'] ? 'true' : 'false';
             }
             save_meta_settings($patch);
+            // A token saved here is also that page's token (it would otherwise keep the old one).
+            if (!empty($patch['META_ACCESS_TOKEN'])) {
+                try {
+                    add_account($patch['META_ACCESS_TOKEN']);
+                } catch (MetaApiError $e) {
+                    // Settings are saved either way; "test connection" shows what Meta says.
+                }
+            }
             return ['success' => true];
         })],
-        'settings.testMeta' => ['mutation', $admin(function () { return test_meta_connection(); })],
+        'settings.testMeta' => ['mutation', $page(function () { return test_meta_connection(); })],
         // Why the inbox may be empty: does Meta call in, and is the account subscribed to the webhook fields?
-        'settings.diagnostics' => ['query', $admin(function () {
+        'settings.diagnostics' => ['query', $page(function () {
             try {
                 $subscription = ['ok' => true] + get_webhook_subscription();
             } catch (MetaApiError $e) {
                 $subscription = ['ok' => false, 'error' => $e->getMessage()];
             }
-            $counts = db()->query("SELECT kind, COUNT(*) n FROM igEvents GROUP BY kind")->fetchAll(PDO::FETCH_KEY_PAIR);
+            $args = [];
+            $stmt = db()->prepare("SELECT kind, COUNT(*) n FROM igEvents WHERE " . page_events_sql('accountId', active_page(), $args) . " GROUP BY kind");
+            $stmt->execute($args);
+            $counts = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+            $args = [];
+            $media = db()->prepare("SELECT COALESCE(SUM(commentsCount), 0) FROM igMedia WHERE " . page_rows_sql('accountId', active_page(), $args));
+            $media->execute($args);
             return ['webhookLog' => list_webhook_log(20), 'subscription' => $subscription,
-                'counts' => ['comments' => (int) ($counts['comment'] ?? 0), 'dms' => (int) ($counts['dm'] ?? 0),
-                    'igComments' => (int) db()->query("SELECT COALESCE(SUM(commentsCount), 0) FROM igMedia")->fetchColumn()]];
+                'counts' => ['comments' => (int) ($counts['comment'] ?? 0), 'dms' => (int) ($counts['dm'] ?? 0), 'igComments' => (int) $media->fetchColumn()]];
         })],
-        'settings.subscribeWebhooks' => ['mutation', $admin(function () { return meta_call('subscribe_webhooks'); })],
+        'settings.subscribeWebhooks' => ['mutation', $page(function () { return meta_call('subscribe_webhooks'); })],
     ];
 }
 

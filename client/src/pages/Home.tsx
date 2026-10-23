@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { BarChart3, ChevronLeft, ImageIcon, Inbox, Instagram, Library, LogIn, LogOut, MessageCircle, MessageSquareText, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
+import { BarChart3, ChevronLeft, ImageIcon, Inbox, Library, LogIn, LogOut, MessageCircle, MessageSquareText, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { AnalyticsView } from "./inbox/AnalyticsView";
 import { AutomationView } from "./inbox/AutomationView";
 import { InboxView } from "./inbox/InboxView";
+import { PageSwitcher } from "./inbox/PageSwitcher";
 import { PostsView } from "./inbox/PostsView";
 import { SettingsView } from "./inbox/SettingsView";
 import { TemplatesView } from "./inbox/TemplatesView";
@@ -93,6 +94,8 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
   const unreadOf = (kind: "comment" | "dm") => threads.data?.filter((thread) => thread.kind === kind && thread.unread).length ?? 0;
   const pending = approvals.data?.length ?? 0;
   const connected = Boolean(status.data?.metaConfigured);
+  // The page the server shows (the one asked for, or the first connected page).
+  const activePage = status.data?.accountId ?? null;
   const badge = (id: Tab) => {
     const count = id === "comments" ? unreadOf("comment") : id === "dms" ? unreadOf("dm") : id === "automation" ? pending : 0;
     return count ? faNum(count) : null;
@@ -105,11 +108,15 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
           <div className="brand-mark"><span>س</span></div>
           <div><strong>سپند</strong><span>INBOX STUDIO</span></div>
         </div>
-        <div className="account-card">
-          <div className="account-avatar"><Instagram size={18} /></div>
-          <div className="account-meta"><b>@sepandsteel</b><span>Sepand Steel · {connected ? "متصل" : "پیکربندی نشده"}</span></div>
-          {connected && <span className="online-dot" />}
-        </div>
+        <PageSwitcher
+          activeId={activePage}
+          connected={connected}
+          onAddPage={() => {
+            go("settings");
+            // After the settings page renders.
+            setTimeout(() => document.getElementById("pages-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+          }}
+        />
         <div className="workspace-label">میز کار</div>
         <nav className="side-nav">
           {navItems.map((item) => {
@@ -138,7 +145,8 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
         </div>
       </aside>
 
-      <main className="main-area">
+      {/* Remounted per page, so no open conversation or draft carries over to another page. */}
+      <main className="main-area" key={activePage ?? "none"}>
         <header className="topbar">
           <div className="breadcrumb"><span>سپند</span><ChevronLeft size={15} /><b>{navItems.find((item) => item.id === tab)?.label}</b></div>
           <div className="top-actions">

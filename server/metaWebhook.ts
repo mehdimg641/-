@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import express, { type Express, type Request, type Response } from "express";
+import { enabledAccounts } from "./accounts";
 import { applyCustomerReactions, ingestEvents, sendReply, type CustomerReaction } from "./inboxService";
 import { getInboxStore } from "./inboxStore";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
@@ -82,20 +83,24 @@ export function verifyMetaSignature(rawBody: Buffer | undefined, header: unknown
   return constantTimeEqual(header.slice("sha256=".length).toLowerCase(), expected);
 }
 
-/** INSTAGRAM_ACCOUNT_IDS (comma separated) or META_INSTAGRAM_ACCOUNT_ID. Empty = accept every account. */
-export function allowedAccountIds() {
+/**
+ * INSTAGRAM_ACCOUNT_IDS (comma separated) or META_INSTAGRAM_ACCOUNT_ID, plus the connected pages.
+ * Empty = accept every account.
+ */
+export function allowedAccountIds(pages: string[] = []) {
   const raw = metaSetting("INSTAGRAM_ACCOUNT_IDS") || process.env.META_INSTAGRAM_ACCOUNT_ID || "";
-  return raw
+  const ids = raw
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+  return Array.from(new Set([...ids, ...pages]));
 }
 
 const REACTION_EMOJI: Record<string, string> = { love: "❤️", like: "👍", laugh: "😂", wow: "😮", sad: "😢", angry: "😡", smile: "😊" };
 
 /** Customers' reactions to our DMs (message_reactions); our own reactions echo back and are skipped. */
-export function extractReactions(body: WebhookBody): CustomerReaction[] {
-  const allowed = allowedAccountIds();
+export function extractReactions(body: WebhookBody, pages: string[] = []): CustomerReaction[] {
+  const allowed = allowedAccountIds(pages);
   const ownIds = new Set(allowed);
   const reactions: CustomerReaction[] = [];
   for (const entry of body.entry ?? []) {
@@ -117,8 +122,8 @@ export function extractReactions(body: WebhookBody): CustomerReaction[] {
  * Turns a verified webhook payload into inbox events. Skips our own comments and echoed DMs
  * (replying to them would loop), deleted messages, read/delivery receipts and other fields.
  */
-export function extractEvents(body: WebhookBody): IncomingEvent[] {
-  const allowed = allowedAccountIds();
+export function extractEvents(body: WebhookBody, pages: string[] = []): IncomingEvent[] {
+  const allowed = allowedAccountIds(pages);
   const ownIds = new Set(allowed);
   const events: IncomingEvent[] = [];
   let seen = 0;
@@ -236,9 +241,10 @@ export function registerMetaWebhook(app: Express) {
     const payload = describePayload(body);
     try {
       const store = await getInboxStore();
-      const events = extractEvents(body);
+      const pages = (await enabledAccounts(store)).map((a) => a.id);
+      const events = extractEvents(body, pages);
       const result = await ingestEvents(store, events);
-      await applyCustomerReactions(store, extractReactions(body));
+      await applyCustomerReactions(store, extractReactions(body, pages));
       toSend = result.toSend;
       recordWebhook({ method: "POST", status: 200, outcome: "received", detail: describeResult(payload, events.length, result), accounts: payload.accounts });
     } catch (error) {

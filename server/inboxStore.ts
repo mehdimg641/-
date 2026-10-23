@@ -1,12 +1,15 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, type AnyColumn } from "drizzle-orm";
 import {
+  igAccounts,
   igEvents,
   igMedia,
   replies,
   replyRules,
   replyTemplates,
+  type IgAccount,
   type IgEvent,
   type IgMedia,
+  type InsertIgAccount,
   type InsertIgMedia,
   type InsertReplyTemplate,
   type ReplyTemplate,
@@ -24,20 +27,29 @@ export type TemplateInput = Omit<InsertReplyTemplate, "id" | "createdAt" | "upda
 export type MediaInput = Omit<InsertIgMedia, "syncedAt">;
 export type ReplyPatch = Partial<Pick<Reply, "text" | "status" | "error" | "decidedBy" | "sentAt" | "channel" | "source" | "quickReplies" | "externalId" | "customerReaction">>;
 export type EventFlags = Partial<Pick<IgEvent, "reaction" | "hidden" | "deleted">>;
+export type AccountPatch = Partial<Omit<InsertIgAccount, "id" | "createdAt">>;
+
+/**
+ * Rules, templates and posts belong to one page. Rows from before pages existed have no page;
+ * they count for every page until assignOrphans() gives them to the first one.
+ */
+const belongs = (rowAccount: string | null | undefined, accountId: string | undefined) =>
+  accountId === undefined || rowAccount == null || rowAccount === accountId;
 
 export interface InboxStore {
   readonly persistent: boolean;
   /** Returns null when the event was already stored (Meta retry or duplicate delivery). */
   insertEvent(event: Omit<InsertIgEvent, "id">): Promise<IgEvent | null>;
   getEvent(id: number): Promise<IgEvent | undefined>;
-  listEvents(limit: number): Promise<IgEvent[]>;
-  markRead(kind: IgEvent["kind"], senderId: string): Promise<void>;
+  /** Newest first; only that page's events when `accountId` is given. */
+  listEvents(limit: number, accountId?: string): Promise<IgEvent[]>;
+  markRead(accountId: string, kind: IgEvent["kind"], senderId: string): Promise<void>;
   setEventRule(id: number, ruleId: number | null): Promise<void>;
   setEventFlags(id: number, flags: EventFlags): Promise<void>;
   findEvent(accountId: string, kind: IgEvent["kind"], externalId: string): Promise<IgEvent | undefined>;
   /** The reply Instagram knows by this id (our sent DM's message_id), for customer reactions. */
   findReplyByExternalId(externalId: string): Promise<Reply | undefined>;
-  listRules(): Promise<ReplyRule[]>;
+  listRules(accountId?: string): Promise<ReplyRule[]>;
   createRule(rule: RuleInput): Promise<ReplyRule>;
   updateRule(id: number, patch: Partial<RuleInput>): Promise<ReplyRule | undefined>;
   deleteRule(id: number): Promise<void>;
@@ -49,17 +61,25 @@ export interface InboxStore {
   /** Atomically moves a reply to "sending" if it is in one of `from`; false means someone else got it. */
   claimReply(id: number, from: Reply["status"][]): Promise<boolean>;
   listReplies(filter: { status?: Reply["status"]; eventIds?: number[] }): Promise<Reply[]>;
-  listTemplates(): Promise<ReplyTemplate[]>;
+  listTemplates(accountId?: string): Promise<ReplyTemplate[]>;
   createTemplate(template: TemplateInput): Promise<ReplyTemplate>;
   updateTemplate(id: number, patch: Partial<TemplateInput>): Promise<ReplyTemplate | undefined>;
   deleteTemplate(id: number): Promise<void>;
   upsertMedia(media: MediaInput[]): Promise<void>;
-  listMedia(): Promise<IgMedia[]>;
+  listMedia(accountId?: string): Promise<IgMedia[]>;
+  listAccounts(): Promise<IgAccount[]>;
+  getAccount(id: string): Promise<IgAccount | undefined>;
+  /** Insert or replace a page (keeps createdAt). */
+  saveAccount(account: InsertIgAccount): Promise<IgAccount>;
+  updateAccount(id: string, patch: AccountPatch): Promise<void>;
+  /** Gives rules, templates and posts without a page to this one. */
+  assignOrphans(accountId: string): Promise<void>;
 }
 
 function ruleDefaults(rule: RuleInput, id: number, now: Date): ReplyRule {
   return {
     id,
+    accountId: rule.accountId ?? null,
     name: rule.name,
     keywords: rule.keywords,
     channels: rule.channels,
@@ -85,12 +105,13 @@ export class MemoryInboxStore implements InboxStore {
   private replies: Reply[] = [];
   private templates: ReplyTemplate[] = [];
   private media = new Map<string, IgMedia>();
+  private accounts = new Map<string, IgAccount>();
   private nextId = 1;
 
   constructor(seedRules: RuleInput[] = DEFAULT_RULES, seedTemplates: TemplateInput[] = DEFAULT_TEMPLATES) {
     const now = new Date();
     this.rules = seedRules.map((rule) => ruleDefaults(rule, this.nextId++, now));
-    this.templates = seedTemplates.map((t) => ({ id: this.nextId++, title: t.title, category: t.category ?? "", text: t.text, createdAt: now, updatedAt: now }));
+    this.templates = seedTemplates.map((t) => ({ id: this.nextId++, accountId: t.accountId ?? null, title: t.title, category: t.category ?? "", text: t.text, createdAt: now, updatedAt: now }));
   }
 
   async insertEvent(event: Omit<InsertIgEvent, "id">) {
@@ -122,12 +143,15 @@ export class MemoryInboxStore implements InboxStore {
     return this.events.find((e) => e.id === id);
   }
 
-  async listEvents(limit: number) {
-    return [...this.events].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id).slice(0, limit);
+  async listEvents(limit: number, accountId?: string) {
+    return this.events
+      .filter((e) => accountId === undefined || e.accountId === accountId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id)
+      .slice(0, limit);
   }
 
-  async markRead(kind: IgEvent["kind"], senderId: string) {
-    for (const e of this.events) if (e.kind === kind && e.senderId === senderId) e.isRead = true;
+  async markRead(accountId: string, kind: IgEvent["kind"], senderId: string) {
+    for (const e of this.events) if (e.accountId === accountId && e.kind === kind && e.senderId === senderId) e.isRead = true;
   }
 
   async setEventRule(id: number, ruleId: number | null) {
@@ -148,8 +172,8 @@ export class MemoryInboxStore implements InboxStore {
     return this.events.find((e) => e.accountId === accountId && e.kind === kind && e.externalId === externalId);
   }
 
-  async listRules() {
-    return [...this.rules];
+  async listRules(accountId?: string) {
+    return this.rules.filter((r) => belongs(r.accountId, accountId));
   }
 
   async createRule(rule: RuleInput) {
@@ -216,13 +240,13 @@ export class MemoryInboxStore implements InboxStore {
     );
   }
 
-  async listTemplates() {
-    return [...this.templates];
+  async listTemplates(accountId?: string) {
+    return this.templates.filter((t) => belongs(t.accountId, accountId));
   }
 
   async createTemplate(template: TemplateInput) {
     const now = new Date();
-    const stored: ReplyTemplate = { id: this.nextId++, title: template.title, category: template.category ?? "", text: template.text, createdAt: now, updatedAt: now };
+    const stored: ReplyTemplate = { id: this.nextId++, accountId: template.accountId ?? null, title: template.title, category: template.category ?? "", text: template.text, createdAt: now, updatedAt: now };
     this.templates.push(stored);
     return stored;
   }
@@ -242,6 +266,7 @@ export class MemoryInboxStore implements InboxStore {
     for (const m of media) {
       this.media.set(m.id, {
         id: m.id,
+        accountId: m.accountId ?? null,
         caption: m.caption ?? null,
         mediaType: m.mediaType ?? null,
         mediaUrl: m.mediaUrl ?? null,
@@ -254,10 +279,51 @@ export class MemoryInboxStore implements InboxStore {
     }
   }
 
-  async listMedia() {
-    return Array.from(this.media.values()).sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0));
+  async listMedia(accountId?: string) {
+    return Array.from(this.media.values())
+      .filter((m) => belongs(m.accountId, accountId))
+      .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0));
+  }
+
+  async listAccounts() {
+    return Array.from(this.accounts.values()).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async getAccount(id: string) {
+    return this.accounts.get(id);
+  }
+
+  async saveAccount(account: InsertIgAccount) {
+    const previous = this.accounts.get(account.id);
+    const stored: IgAccount = {
+      id: account.id,
+      username: account.username ?? null,
+      name: account.name ?? null,
+      token: account.token,
+      tokenExpiresAt: account.tokenExpiresAt ?? null,
+      tokenRefreshedAt: account.tokenRefreshedAt ?? null,
+      lastError: account.lastError ?? null,
+      enabled: account.enabled ?? true,
+      createdAt: previous?.createdAt ?? new Date(),
+    };
+    this.accounts.set(account.id, stored);
+    return stored;
+  }
+
+  async updateAccount(id: string, patch: AccountPatch) {
+    const account = this.accounts.get(id);
+    if (account) Object.assign(account, patch);
+  }
+
+  async assignOrphans(accountId: string) {
+    for (const r of this.rules) r.accountId ??= accountId;
+    for (const t of this.templates) t.accountId ??= accountId;
+    for (const m of Array.from(this.media.values())) m.accountId ??= accountId;
   }
 }
+
+/** Rows of this page, plus rows from before pages existed. */
+const ofAccount = (column: AnyColumn, accountId: string | undefined) => (accountId === undefined ? undefined : or(isNull(column), eq(column, accountId)));
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -318,15 +384,20 @@ export class DrizzleInboxStore implements InboxStore {
     return rows[0];
   }
 
-  async listEvents(limit: number) {
-    return this.db.select().from(igEvents).orderBy(desc(igEvents.createdAt), desc(igEvents.id)).limit(limit);
+  async listEvents(limit: number, accountId?: string) {
+    return this.db
+      .select()
+      .from(igEvents)
+      .where(accountId === undefined ? undefined : eq(igEvents.accountId, accountId))
+      .orderBy(desc(igEvents.createdAt), desc(igEvents.id))
+      .limit(limit);
   }
 
-  async markRead(kind: IgEvent["kind"], senderId: string) {
+  async markRead(accountId: string, kind: IgEvent["kind"], senderId: string) {
     await this.db
       .update(igEvents)
       .set({ isRead: true })
-      .where(and(eq(igEvents.kind, kind), eq(igEvents.senderId, senderId)));
+      .where(and(eq(igEvents.accountId, accountId), eq(igEvents.kind, kind), eq(igEvents.senderId, senderId)));
   }
 
   async setEventRule(id: number, ruleId: number | null) {
@@ -351,12 +422,15 @@ export class DrizzleInboxStore implements InboxStore {
     return rows[0] ? normalizeReply(rows[0]) : undefined;
   }
 
-  async listRules() {
-    const rows = await this.db.select().from(replyRules);
-    if (rows.length > 0 || this.seeded) return rows.map(normalizeRule);
+  async listRules(accountId?: string) {
+    const read = async () => (await this.db.select().from(replyRules).where(ofAccount(replyRules.accountId, accountId))).map(normalizeRule);
+    const rows = await read();
+    if (rows.length > 0 || this.seeded) return rows;
     this.seeded = true;
-    await this.db.insert(replyRules).values(DEFAULT_RULES);
-    return (await this.db.select().from(replyRules)).map(normalizeRule);
+    // Only a brand-new install gets the starter rules; a new page starts empty (or copies another's).
+    if ((await this.db.select({ id: replyRules.id }).from(replyRules).limit(1)).length) return rows;
+    await this.db.insert(replyRules).values(DEFAULT_RULES.map((r) => ({ ...r, accountId: accountId ?? null })));
+    return read();
   }
 
   private async getRule(id: number) {
@@ -422,12 +496,14 @@ export class DrizzleInboxStore implements InboxStore {
     return rows.map(normalizeReply);
   }
 
-  async listTemplates() {
-    const rows = await this.db.select().from(replyTemplates).orderBy(replyTemplates.id);
+  async listTemplates(accountId?: string) {
+    const read = () => this.db.select().from(replyTemplates).where(ofAccount(replyTemplates.accountId, accountId)).orderBy(replyTemplates.id);
+    const rows = await read();
     if (rows.length > 0 || this.templatesSeeded) return rows;
     this.templatesSeeded = true;
-    await this.db.insert(replyTemplates).values(DEFAULT_TEMPLATES);
-    return this.db.select().from(replyTemplates).orderBy(replyTemplates.id);
+    if ((await this.db.select({ id: replyTemplates.id }).from(replyTemplates).limit(1)).length) return rows;
+    await this.db.insert(replyTemplates).values(DEFAULT_TEMPLATES.map((t) => ({ ...t, accountId: accountId ?? null })));
+    return read();
   }
 
   async createTemplate(template: TemplateInput) {
@@ -454,8 +530,33 @@ export class DrizzleInboxStore implements InboxStore {
     }
   }
 
-  async listMedia() {
-    return this.db.select().from(igMedia).orderBy(desc(igMedia.postedAt));
+  async listMedia(accountId?: string) {
+    return this.db.select().from(igMedia).where(ofAccount(igMedia.accountId, accountId)).orderBy(desc(igMedia.postedAt));
+  }
+
+  async listAccounts() {
+    return this.db.select().from(igAccounts).orderBy(igAccounts.createdAt);
+  }
+
+  async getAccount(id: string) {
+    const rows = await this.db.select().from(igAccounts).where(eq(igAccounts.id, id)).limit(1);
+    return rows[0];
+  }
+
+  async saveAccount(account: InsertIgAccount) {
+    const { id, createdAt: _, ...rest } = account;
+    await this.db.insert(igAccounts).values(account).onDuplicateKeyUpdate({ set: rest });
+    return (await this.getAccount(id))!;
+  }
+
+  async updateAccount(id: string, patch: AccountPatch) {
+    if (Object.keys(patch).length) await this.db.update(igAccounts).set(patch).where(eq(igAccounts.id, id));
+  }
+
+  async assignOrphans(accountId: string) {
+    await this.db.update(replyRules).set({ accountId }).where(isNull(replyRules.accountId));
+    await this.db.update(replyTemplates).set({ accountId }).where(isNull(replyTemplates.accountId));
+    await this.db.update(igMedia).set({ accountId }).where(isNull(igMedia.accountId));
   }
 }
 

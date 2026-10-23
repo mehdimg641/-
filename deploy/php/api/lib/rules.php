@@ -69,6 +69,7 @@ function rule_row(array $row): array
 {
     return [
         'id' => (int) $row['id'],
+        'accountId' => $row['accountId'] ?? null,
         'name' => $row['name'],
         'keywords' => json_decode((string) $row['keywords'], true) ?: [],
         'channels' => json_decode((string) $row['channels'], true) ?: [],
@@ -86,22 +87,32 @@ function rule_row(array $row): array
     ];
 }
 
-function list_rules(): array
+/** A page's rules (the active page's by default). */
+function list_rules(?string $accountId = null): array
 {
+    $accountId = $accountId ?? active_page();
     $pdo = db();
-    $rows = $pdo->query("SELECT * FROM replyRules ORDER BY priority, id")->fetchAll();
+    $read = function () use ($pdo, $accountId): array {
+        $args = [];
+        $stmt = $pdo->prepare("SELECT * FROM replyRules WHERE " . page_rows_sql('accountId', $accountId, $args) . " ORDER BY priority, id");
+        $stmt->execute($args);
+        return $stmt->fetchAll();
+    };
+    $rows = $read();
+    // Only a brand-new install gets the starter rules; a new page starts empty (or copies another's).
     if (!$rows && !(int) $pdo->query("SELECT COUNT(*) FROM appSettings WHERE `key` = 'RULES_SEEDED'")->fetchColumn()) {
-        foreach (default_rules() as $rule) insert_rule($rule);
+        foreach (default_rules() as $rule) insert_rule($rule, $accountId);
         // Remember the seeding so an operator who deletes every rule doesn't get the defaults back.
         $pdo->exec("INSERT IGNORE INTO appSettings (`key`, `value`) VALUES ('RULES_SEEDED', '1')");
-        $rows = $pdo->query("SELECT * FROM replyRules ORDER BY priority, id")->fetchAll();
+        $rows = $read();
     }
     return array_map('rule_row', $rows);
 }
 
-function insert_rule(array $rule): int
+function insert_rule(array $rule, ?string $accountId = null): int
 {
-    db()->prepare("INSERT INTO replyRules (name, keywords, channels, action, template, templateId, dmTemplate, dmTemplateId, mediaIds, dmButtons, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
+    db()->prepare("INSERT INTO replyRules (accountId, name, keywords, channels, action, template, templateId, dmTemplate, dmTemplateId, mediaIds, dmButtons, priority, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")->execute([
+        $accountId ?? active_page(),
         $rule['name'],
         json_encode(array_values($rule['keywords']), JSON_UNESCAPED_UNICODE),
         json_encode(array_values($rule['channels'])),
@@ -206,21 +217,40 @@ function matching_rules(array $rules, string $channel, string $text, ?string $me
 
 function template_row(array $row): array
 {
-    return ['id' => (int) $row['id'], 'title' => $row['title'], 'category' => $row['category'], 'text' => $row['text'],
+    return ['id' => (int) $row['id'], 'accountId' => $row['accountId'] ?? null, 'title' => $row['title'], 'category' => $row['category'], 'text' => $row['text'],
         'createdAt' => db_time($row['createdAt']), 'updatedAt' => db_time($row['updatedAt'])];
 }
 
-function list_templates(): array
+/** A page's templates (the active page's by default). */
+function list_templates(?string $accountId = null): array
 {
+    $accountId = $accountId ?? active_page();
     $pdo = db();
-    $rows = $pdo->query("SELECT * FROM replyTemplates ORDER BY id")->fetchAll();
+    $read = function () use ($pdo, $accountId): array {
+        $args = [];
+        $stmt = $pdo->prepare("SELECT * FROM replyTemplates WHERE " . page_rows_sql('accountId', $accountId, $args) . " ORDER BY id");
+        $stmt->execute($args);
+        return $stmt->fetchAll();
+    };
+    $rows = $read();
     if (!$rows && !(int) $pdo->query("SELECT COUNT(*) FROM appSettings WHERE `key` = 'TEMPLATES_SEEDED'")->fetchColumn()) {
-        $insert = $pdo->prepare("INSERT INTO replyTemplates (title, category, text) VALUES (?, ?, ?)");
-        foreach (default_templates() as $t) $insert->execute([$t['title'], $t['category'], $t['text']]);
+        $insert = $pdo->prepare("INSERT INTO replyTemplates (accountId, title, category, text) VALUES (?, ?, ?, ?)");
+        foreach (default_templates() as $t) $insert->execute([$accountId, $t['title'], $t['category'], $t['text']]);
         $pdo->exec("INSERT IGNORE INTO appSettings (`key`, `value`) VALUES ('TEMPLATES_SEEDED', '1')");
-        $rows = $pdo->query("SELECT * FROM replyTemplates ORDER BY id")->fetchAll();
+        $rows = $read();
     }
     return array_map('template_row', $rows);
+}
+
+/** @return callable(?string): array{0: array, 1: array} each page's rules and templates, read once per call */
+function page_rules(): callable
+{
+    $cache = [];
+    return function (?string $accountId) use (&$cache): array {
+        $key = (string) $accountId;
+        if (!isset($cache[$key])) $cache[$key] = [list_rules($accountId), list_templates($accountId)];
+        return $cache[$key];
+    };
 }
 
 function get_template(int $id): ?array

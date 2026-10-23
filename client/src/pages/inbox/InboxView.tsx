@@ -53,7 +53,7 @@ function historyMessage(r: HistoryResult) {
 const COPY = {
   comment: {
     title: "کامنت‌ها",
-    subtitle: "کامنت‌های زیر پست‌های @sepandsteel؛ پاسخ شما زیر همان کامنت می‌نشیند.",
+    subtitle: "کامنت‌های زیر پست‌های این پیج؛ پاسخ شما زیر همان کامنت می‌نشیند.",
     icon: MessageSquareText,
     empty: "هنوز کامنتی نرسیده",
     replyLabel: "پاسخ زیر آخرین کامنت",

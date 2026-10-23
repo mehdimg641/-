@@ -100,9 +100,9 @@ function resolve_tap(array $event, array $rules): ?array
     if ($tap === null) {
         $typed = trim(normalize_text($event['text']));
         $stmt = db()->prepare("SELECT r.quickReplies FROM replies r JOIN igEvents e ON e.id = r.eventId
-            WHERE e.senderId = ? AND r.status = 'sent' AND r.quickReplies IS NOT NULL AND r.sentAt >= NOW() - INTERVAL " . TAP_WINDOW_SECONDS . " SECOND
+            WHERE e.accountId = ? AND e.senderId = ? AND r.status = 'sent' AND r.quickReplies IS NOT NULL AND r.sentAt >= NOW() - INTERVAL " . TAP_WINDOW_SECONDS . " SECOND
             ORDER BY r.sentAt DESC, r.id DESC LIMIT 20");
-        $stmt->execute([$event['senderId']]);
+        $stmt->execute([$event['accountId'], $event['senderId']]);
         foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $json) {
             foreach (json_decode((string) $json, true) ?: [] as $q) {
                 if (trim(normalize_text((string) $q['title'])) === $typed) { $tap = parse_button_payload((string) $q['payload']); break 2; }
@@ -174,11 +174,11 @@ function closed_channels(string $kind, DateTimeImmutable $createdAt): array
     return $closed;
 }
 
-/** The sender's latest DM time (a DM stays answerable for 24 hours after it), or $fallback. */
-function latest_dm_at(string $senderId, DateTimeImmutable $fallback): DateTimeImmutable
+/** The sender's latest DM to this page (a DM stays answerable for 24 hours after it), or $fallback. */
+function latest_dm_at(string $accountId, string $senderId, DateTimeImmutable $fallback): DateTimeImmutable
 {
-    $stmt = db()->prepare("SELECT MAX(createdAt) FROM igEvents WHERE kind = 'dm' AND senderId = ?");
-    $stmt->execute([$senderId]);
+    $stmt = db()->prepare("SELECT MAX(createdAt) FROM igEvents WHERE kind = 'dm' AND accountId = ? AND senderId = ?");
+    $stmt->execute([$accountId, $senderId]);
     $latest = db_time($stmt->fetchColumn() ?: null);
     return $latest && $latest > $fallback ? $latest : $fallback;
 }
@@ -208,8 +208,8 @@ function claim_reply(int $id, array $from): bool
 function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = true, bool $read = false): array
 {
     if (!$events) return ['stored' => 0, 'duplicates' => 0, 'toSend' => []];
-    $rules = list_rules();
-    $templates = list_templates();
+    // Each event is matched against its own page's rules.
+    $rulesFor = page_rules();
     $autoSend = $allowAutoSend && auto_reply_enabled();
     $pdo = db();
     $result = ['stored' => 0, 'duplicates' => 0, 'toSend' => []];
@@ -217,6 +217,7 @@ function ingest_events(array $events, bool $allowAutoSend = true, bool $draft = 
     $insert = $pdo->prepare("INSERT IGNORE INTO igEvents (accountId, kind, externalId, senderId, username, text, mediaId, ruleId, isRead, createdAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))");
     foreach ($events as $e) {
+        [$rules, $templates] = $rulesFor($e['accountId']);
         $tap = $draft ? resolve_tap($e, $rules) : null;
         $decision = $tap ? null : decide_reply($rules, $templates, $e['kind'], (string) ($e['username'] ?? ''), $e['text'], $e['mediaId']);
         $ruleId = $tap ? $tap['rule']['id'] : ($decision ? $decision['rule']['id'] : null);
@@ -254,12 +255,15 @@ const REDRAFT_WINDOW_DAYS = 7;
 function redraft_pending(): array
 {
     @set_time_limit(120);
-    $rules = list_rules();
-    $templates = list_templates();
+    $rulesFor = page_rules();
     $pdo = db();
+    $args = [];
+    $page = page_events_sql('accountId', active_page(), $args);
     // The session runs in UTC (bootstrap), like the stored timestamps.
-    $events = array_map('event_row', $pdo->query("SELECT * FROM igEvents WHERE createdAt >= NOW() - INTERVAL " . REDRAFT_WINDOW_DAYS . " DAY
-        OR id IN (SELECT eventId FROM replies WHERE status = 'pending' AND source = 'rule') ORDER BY id")->fetchAll());
+    $stmt = $pdo->prepare("SELECT * FROM igEvents WHERE $page AND (createdAt >= NOW() - INTERVAL " . REDRAFT_WINDOW_DAYS . " DAY
+        OR id IN (SELECT eventId FROM replies WHERE status = 'pending' AND source = 'rule')) ORDER BY id");
+    $stmt->execute($args);
+    $events = array_map('event_row', $stmt->fetchAll());
     $byEvent = [];
     foreach (replies_for_events(array_column($events, 'id')) as $reply) $byEvent[$reply['eventId']][] = $reply;
     $updated = 0;
@@ -273,6 +277,7 @@ function redraft_pending(): array
         // A channel past Instagram's deadline is left as it is: its drafts can only be rejected.
         $skip = $sent + closed_channels($event['kind'], $event['createdAt']);
         $drafts = array_values(array_filter($own, function ($r) use ($skip) { return $r['status'] === 'pending' && $r['source'] === 'rule' && !isset($skip[$r['channel']]); }));
+        [$rules, $templates] = $rulesFor($event['accountId']);
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         $ruleId = $decision ? $decision['rule']['id'] : null;
         $wanted = $decision ? array_values(array_filter(draft_parts($event['kind'], $decision, $event['id']), function ($p) use ($skip) { return !isset($skip[$p['channel']]); })) : [];
@@ -296,11 +301,14 @@ function apply_rules_to_unanswered(): array
 {
     // First bring drafts already in the queue up to date with the current rules.
     $updated = redraft_pending()['updated'];
-    $rules = list_rules();
-    $templates = list_templates();
-    $rows = db()->query("SELECT e.* FROM igEvents e LEFT JOIN replies r ON r.eventId = e.id WHERE r.id IS NULL ORDER BY e.createdAt DESC, e.id DESC LIMIT " . THREAD_EVENT_LIMIT)->fetchAll();
+    $rulesFor = page_rules();
+    $args = [];
+    $stmt = db()->prepare("SELECT e.* FROM igEvents e LEFT JOIN replies r ON r.eventId = e.id WHERE r.id IS NULL AND " . page_events_sql('e.accountId', active_page(), $args)
+        . " ORDER BY e.createdAt DESC, e.id DESC LIMIT " . THREAD_EVENT_LIMIT);
+    $stmt->execute($args);
     $drafted = 0;
-    foreach (array_map('event_row', $rows) as $event) {
+    foreach (array_map('event_row', $stmt->fetchAll()) as $event) {
+        [$rules, $templates] = $rulesFor($event['accountId']);
         $decision = decide_reply($rules, $templates, $event['kind'], (string) ($event['username'] ?? ''), $event['text'], $event['mediaId']);
         if ($decision && create_drafts($event['id'], $event['kind'], $decision, $event['createdAt'])) $drafted++;
     }
@@ -317,15 +325,18 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
 
     $text = trim($editedText ?? $reply['text']);
     $buttons = $reply['quickReplies'] ?: null;
+    // Always as the page the message came to, whatever page the dashboard shows.
     $send = function (string $body, ?array $quickReplies) use ($reply, $event): array {
-        if ($reply['channel'] === 'private') return send_private_reply($event['externalId'], $body, $quickReplies);
-        if ($event['kind'] === 'comment') return reply_to_comment($event['externalId'], $body);
-        return send_direct_message($event['senderId'], $body, $quickReplies);
+        return with_account($event['accountId'], function () use ($reply, $event, $body, $quickReplies) {
+            if ($reply['channel'] === 'private') return send_private_reply($event['externalId'], $body, $quickReplies);
+            if ($event['kind'] === 'comment') return reply_to_comment($event['externalId'], $body);
+            return send_direct_message($event['senderId'], $body, $quickReplies);
+        });
     };
     try {
         if ($text === '') throw new MetaApiError('متن پاسخ خالی است');
         // Past Instagram's deadline the API only answers with an error; say why without calling it.
-        $received = $event['kind'] === 'dm' ? latest_dm_at($event['senderId'], $event['createdAt']) : $event['createdAt'];
+        $received = $event['kind'] === 'dm' ? latest_dm_at($event['accountId'], $event['senderId'], $event['createdAt']) : $event['createdAt'];
         $deadline = reply_deadline($event['kind'], $reply['channel'], $received);
         if ($deadline && $deadline <= new DateTimeImmutable('now', new DateTimeZone('UTC'))) {
             throw new MetaApiError($reply['channel'] === 'private' ? PRIVATE_WINDOW_CLOSED : DM_WINDOW_CLOSED);
@@ -385,7 +396,7 @@ function react_to_event(int $eventId, bool $on): void
 {
     $event = get_event($eventId);
     if (!$event || $event['kind'] !== 'dm') throw new ApiError('CONFLICT', 'فقط روی دایرکت می‌شود ریکشن گذاشت');
-    react_to_message($event['senderId'], $event['externalId'], $on);
+    with_account($event['accountId'], function () use ($event, $on) { react_to_message($event['senderId'], $event['externalId'], $on); });
     db()->prepare("UPDATE igEvents SET reaction = ? WHERE id = ?")->execute([$on ? 'love' : null, $eventId]);
 }
 
@@ -396,12 +407,12 @@ function moderate_comment(int $eventId, string $action, int $operatorId): void
     if (!$event || $event['kind'] !== 'comment') throw new ApiError('CONFLICT', 'فقط کامنت‌ها را می‌شود مخفی یا حذف کرد');
     if ($event['deleted']) throw new ApiError('CONFLICT', 'این کامنت قبلاً حذف شده است');
     if ($action === 'delete') {
-        delete_comment($event['externalId']);
+        with_account($event['accountId'], function () use ($event) { delete_comment($event['externalId']); });
         db()->prepare("UPDATE igEvents SET deleted = 1 WHERE id = ?")->execute([$eventId]);
         db()->prepare("UPDATE replies SET status = 'rejected', decidedBy = ? WHERE eventId = ? AND status = 'pending'")->execute([$operatorId, $eventId]);
         return;
     }
-    set_comment_hidden($event['externalId'], $action === 'hide');
+    with_account($event['accountId'], function () use ($event, $action) { set_comment_hidden($event['externalId'], $action === 'hide'); });
     db()->prepare("UPDATE igEvents SET hidden = ? WHERE id = ?")->execute([$action === 'hide' ? 1 : 0, $eventId]);
 }
 
@@ -437,8 +448,8 @@ function send_manual_reply(int $eventId, string $text, int $operatorId): array
     if ($result['ok']) {
         // The operator answered this conversation directly; its in-place rule drafts are now stale.
         // Private-DM drafts for comments are a separate action and stay in the queue.
-        $stmt = db()->prepare("SELECT r.id FROM replies r JOIN igEvents e ON e.id = r.eventId WHERE r.status = 'pending' AND r.channel = 'reply' AND e.kind = ? AND e.senderId = ?");
-        $stmt->execute([$event['kind'], $event['senderId']]);
+        $stmt = db()->prepare("SELECT r.id FROM replies r JOIN igEvents e ON e.id = r.eventId WHERE r.status = 'pending' AND r.channel = 'reply' AND e.accountId = ? AND e.kind = ? AND e.senderId = ?");
+        $stmt->execute([$event['accountId'], $event['kind'], $event['senderId']]);
         foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $draftId) {
             if (claim_reply((int) $draftId, ['pending'])) {
                 db()->prepare("UPDATE replies SET status = 'rejected', decidedBy = ? WHERE id = ?")->execute([$operatorId, $draftId]);
@@ -448,9 +459,9 @@ function send_manual_reply(int $eventId, string $text, int $operatorId): array
     return $result;
 }
 
-function mark_read(string $kind, string $senderId): void
+function mark_read(string $accountId, string $kind, string $senderId): void
 {
-    db()->prepare("UPDATE igEvents SET isRead = true WHERE kind = ? AND senderId = ?")->execute([$kind, $senderId]);
+    db()->prepare("UPDATE igEvents SET isRead = true WHERE accountId = ? AND kind = ? AND senderId = ?")->execute([$accountId, $kind, $senderId]);
 }
 
 function display_name(array $event): string
@@ -475,10 +486,13 @@ function rule_style(array $rules): callable
     };
 }
 
+/** The active page's latest events, newest first. */
 function recent_events(): array
 {
-    $rows = db()->query("SELECT * FROM igEvents ORDER BY createdAt DESC, id DESC LIMIT " . THREAD_EVENT_LIMIT)->fetchAll();
-    return array_map('event_row', $rows);
+    $args = [];
+    $stmt = db()->prepare("SELECT * FROM igEvents WHERE " . page_events_sql('accountId', active_page(), $args) . " ORDER BY createdAt DESC, id DESC LIMIT " . THREAD_EVENT_LIMIT);
+    $stmt->execute($args);
+    return array_map('event_row', $stmt->fetchAll());
 }
 
 function replies_for_events(array $eventIds): array
@@ -540,11 +554,14 @@ function build_threads(): array
 function list_approvals(): array
 {
     $style = rule_style(list_rules());
-    $rows = db()->query("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt,
+    $args = [];
+    $stmt = db()->prepare("SELECT r.*, e.kind, e.senderId, e.username, e.mediaId, e.text AS incoming, e.createdAt AS receivedAt,
         EXISTS(SELECT 1 FROM replies s WHERE s.eventId = r.eventId AND s.status = 'sent') AS answered,
-        (SELECT MAX(d.createdAt) FROM igEvents d WHERE d.kind = 'dm' AND d.senderId = e.senderId) AS lastDmAt
+        (SELECT MAX(d.createdAt) FROM igEvents d WHERE d.kind = 'dm' AND d.accountId = e.accountId AND d.senderId = e.senderId) AS lastDmAt
         FROM replies r JOIN igEvents e ON e.id = r.eventId
-        WHERE r.status IN ('pending', 'failed') ORDER BY r.createdAt, r.id")->fetchAll();
+        WHERE r.status IN ('pending', 'failed') AND " . page_events_sql('e.accountId', active_page(), $args) . " ORDER BY r.createdAt, r.id");
+    $stmt->execute($args);
+    $rows = $stmt->fetchAll();
     $items = [];
     foreach ($rows as $row) {
         $reply = reply_row($row);
@@ -620,11 +637,11 @@ function inbox_stats(): array
 function sync_posts(): array
 {
     $media = list_recent_media();
-    $stmt = db()->prepare("INSERT INTO igMedia (id, caption, mediaType, mediaUrl, thumbnailUrl, permalink, postedAt, commentsCount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE caption = VALUES(caption), mediaType = VALUES(mediaType), mediaUrl = VALUES(mediaUrl), thumbnailUrl = VALUES(thumbnailUrl),
+    $stmt = db()->prepare("INSERT INTO igMedia (accountId, id, caption, mediaType, mediaUrl, thumbnailUrl, permalink, postedAt, commentsCount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE accountId = COALESCE(VALUES(accountId), accountId), caption = VALUES(caption), mediaType = VALUES(mediaType), mediaUrl = VALUES(mediaUrl), thumbnailUrl = VALUES(thumbnailUrl),
         permalink = VALUES(permalink), postedAt = VALUES(postedAt), commentsCount = VALUES(commentsCount)");
     foreach ($media as $m) {
-        $stmt->execute([$m['id'], $m['caption'], $m['mediaType'], $m['mediaUrl'], $m['thumbnailUrl'], $m['permalink'], $m['postedAt'], $m['commentsCount']]);
+        $stmt->execute([active_page(), $m['id'], $m['caption'], $m['mediaType'], $m['mediaUrl'], $m['thumbnailUrl'], $m['permalink'], $m['postedAt'], $m['commentsCount']]);
     }
     return ['synced' => count($media)];
 }
@@ -638,19 +655,29 @@ function blank_post(string $id): array
 function list_posts(): array
 {
     $pdo = db();
+    $page = active_page();
     $posts = [];
-    foreach ($pdo->query("SELECT * FROM igMedia ORDER BY postedAt DESC")->fetchAll() as $m) {
+    $args = [];
+    $stmt = $pdo->prepare("SELECT * FROM igMedia WHERE " . page_rows_sql('accountId', $page, $args) . " ORDER BY postedAt DESC");
+    $stmt->execute($args);
+    foreach ($stmt->fetchAll() as $m) {
         $posts[$m['id']] = ['caption' => $m['caption'], 'mediaType' => $m['mediaType'], 'imageUrl' => $m['thumbnailUrl'] ?: $m['mediaUrl'],
             'permalink' => $m['permalink'], 'postedAt' => db_time($m['postedAt']),
             'igComments' => $m['commentsCount'] === null ? null : (int) $m['commentsCount'], 'synced' => true] + blank_post($m['id']);
     }
     // Comments can arrive for posts that were never synced; list them anyway.
-    foreach ($pdo->query("SELECT mediaId, COUNT(*) n FROM igEvents WHERE kind = 'comment' AND mediaId IS NOT NULL GROUP BY mediaId")->fetchAll() as $row) {
+    $args = [];
+    $stmt = $pdo->prepare("SELECT mediaId, COUNT(*) n FROM igEvents WHERE kind = 'comment' AND mediaId IS NOT NULL AND " . page_events_sql('accountId', $page, $args) . " GROUP BY mediaId");
+    $stmt->execute($args);
+    foreach ($stmt->fetchAll() as $row) {
         if (!isset($posts[$row['mediaId']])) $posts[$row['mediaId']] = blank_post($row['mediaId']);
         $posts[$row['mediaId']]['comments'] = (int) $row['n'];
     }
-    $stats = $pdo->query("SELECT e.mediaId, r.status, r.channel, COUNT(*) n FROM replies r JOIN igEvents e ON e.id = r.eventId
-        WHERE e.kind = 'comment' AND e.mediaId IS NOT NULL GROUP BY e.mediaId, r.status, r.channel")->fetchAll();
+    $args = [];
+    $stmt = $pdo->prepare("SELECT e.mediaId, r.status, r.channel, COUNT(*) n FROM replies r JOIN igEvents e ON e.id = r.eventId
+        WHERE e.kind = 'comment' AND e.mediaId IS NOT NULL AND " . page_events_sql('e.accountId', $page, $args) . " GROUP BY e.mediaId, r.status, r.channel");
+    $stmt->execute($args);
+    $stats = $stmt->fetchAll();
     foreach ($stats as $row) {
         if (!isset($posts[$row['mediaId']])) continue;
         $n = (int) $row['n'];
@@ -671,8 +698,9 @@ function list_posts(): array
 function post_comments(string $mediaId): array
 {
     $style = rule_style(list_rules());
-    $stmt = db()->prepare("SELECT * FROM igEvents WHERE kind = 'comment' AND mediaId = ? ORDER BY createdAt DESC, id DESC LIMIT " . THREAD_EVENT_LIMIT);
-    $stmt->execute([$mediaId]);
+    $args = [$mediaId];
+    $stmt = db()->prepare("SELECT * FROM igEvents WHERE kind = 'comment' AND mediaId = ? AND " . page_events_sql('accountId', active_page(), $args) . " ORDER BY createdAt DESC, id DESC LIMIT " . THREAD_EVENT_LIMIT);
+    $stmt->execute($args);
     $events = array_map('event_row', $stmt->fetchAll());
     $byEvent = [];
     foreach (replies_for_events(array_column($events, 'id')) as $reply) {
@@ -779,7 +807,10 @@ function import_history(string $accountId): array
     }
 
     sync_posts();
-    $posts = db()->query("SELECT id, commentsCount FROM igMedia WHERE commentsCount > 0 ORDER BY postedAt DESC LIMIT " . HISTORY_POSTS)->fetchAll();
+    $args = [];
+    $stmt = db()->prepare("SELECT id, commentsCount FROM igMedia WHERE commentsCount > 0 AND " . page_rows_sql('accountId', active_page(), $args) . " ORDER BY postedAt DESC LIMIT " . HISTORY_POSTS);
+    $stmt->execute($args);
+    $posts = $stmt->fetchAll();
     $comments = ['posts' => count($posts), 'reported' => 0, 'fetched' => 0, 'imported' => 0, 'hidden' => 0, 'more' => 0];
     foreach ($posts as $post) {
         $result = import_post_comments($post['id'], $accountId, false, true);

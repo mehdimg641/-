@@ -10,7 +10,7 @@ class MetaApiError extends Exception {}
 
 function meta_api_host(): string
 {
-    return strpos(meta_setting('META_ACCESS_TOKEN'), 'EAA') === 0 ? 'facebook' : 'instagram';
+    return strpos(current_graph_token(), 'EAA') === 0 ? 'facebook' : 'instagram';
 }
 
 function graph_base(): string
@@ -28,7 +28,7 @@ function parse_graph_json(string $text): array
 
 function graph_request(string $method, string $path, ?array $body = null): array
 {
-    $token = meta_setting('META_ACCESS_TOKEN');
+    $token = current_graph_token();
     if ($token === '') throw new MetaApiError('توکن دسترسی اینستاگرام تنظیم نشده است (تنظیمات → اتصال اینستاگرام)');
     $url = graph_base() . $path;
     $ch = curl_init($url);
@@ -122,7 +122,26 @@ function test_meta_connection(): array
     }
 }
 
-/** DM to the author of a comment (Instagram "private reply"); once per comment, within 7 days. */
+/**
+ * Swaps a long-lived Instagram Login token for a fresh one (another 60 days). Meta allows this
+ * once the token is at least 24 hours old.
+ */
+function refresh_instagram_token(string $token): array
+{
+    $ch = curl_init('https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=' . rawurlencode($token));
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 15]);
+    $text = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+    if ($text === false) throw new MetaApiError("ارتباط سرور با graph.instagram.com برقرار نشد ($error)");
+    $data = parse_graph_json((string) $text);
+    if ($status < 200 || $status >= 300) throw new MetaApiError(describe_meta_error($status, ($data['error'] ?? []) + ['message' => substr((string) $text, 0, 300)]));
+    if (empty($data['access_token'])) throw new MetaApiError('Meta توکن تازه را برنگرداند');
+    $expires = isset($data['expires_in']) ? gmdate('Y-m-d H:i:s', time() + (int) $data['expires_in']) : null;
+    return ['token' => (string) $data['access_token'], 'expiresAt' => $expires];
+}
+
 /** Puts a heart on (or takes it off) a customer's DM. Instagram only sends the "love" reaction. */
 function react_to_message(string $recipientId, string $messageId, bool $on): array
 {
@@ -145,6 +164,7 @@ function delete_comment(string $commentId): array
     return graph_request('DELETE', '/' . rawurlencode($commentId));
 }
 
+/** DM to the author of a comment (Instagram "private reply"); once per comment, within 7 days. */
 function send_private_reply(string $commentId, string $text, ?array $quickReplies = null): array
 {
     return graph_request('POST', '/me/messages', ['recipient' => ['comment_id' => $commentId], 'message' => with_quick_replies($text, $quickReplies)]);
@@ -153,9 +173,9 @@ function send_private_reply(string $commentId, string $text, ?array $quickReplie
 function media_owner(): string
 {
     if (meta_api_host() === 'instagram') return 'me';
-    $ids = allowed_account_ids();
-    if (!$ids) throw new MetaApiError('ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید (تست اتصال آن را پر می‌کند)');
-    return rawurlencode($ids[0]);
+    $id = current_graph_account_id();
+    if ($id === '') throw new MetaApiError('ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید (تست اتصال آن را پر می‌کند)');
+    return rawurlencode($id);
 }
 
 const WEBHOOK_FIELDS = ['comments', 'messages'];

@@ -4,15 +4,29 @@
  * - Facebook Login page tokens ("EAA…") use graph.facebook.com.
  * META_API_HOST=instagram|facebook overrides the guess.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { WINDOW_CLOSED, type QuickReply } from "@shared/inbox";
 import { metaSetting, refreshMetaSettings } from "./metaSettings";
+
+/** The page Graph calls act for: its id and decrypted token. */
+export type GraphAccount = { id: string; token: string };
+const graphAccount = new AsyncLocalStorage<GraphAccount>();
+
+/** Runs `fn` with every Graph call inside it using this page's token. */
+export function withGraphAccount<T>(account: GraphAccount, fn: () => Promise<T>) {
+  return graphAccount.run(account, fn);
+}
+
+// Outside withGraphAccount (old single-page installs, tests): the token from Settings.
+const currentToken = () => graphAccount.getStore()?.token ?? metaSetting("META_ACCESS_TOKEN");
+const currentAccountId = () => graphAccount.getStore()?.id || metaSetting("INSTAGRAM_ACCOUNT_IDS").split(",")[0]?.trim() || "";
 
 export type MetaApiHost = "instagram" | "facebook";
 
 export function getMetaApiHost(): MetaApiHost {
   const override = process.env.META_API_HOST;
   if (override === "instagram" || override === "facebook") return override;
-  return metaSetting("META_ACCESS_TOKEN").startsWith("EAA") ? "facebook" : "instagram";
+  return currentToken().startsWith("EAA") ? "facebook" : "instagram";
 }
 
 function graphBase() {
@@ -47,7 +61,7 @@ export function describeMetaError(status: number, error: MetaErrorBody) {
 
 async function graphRequest(method: "GET" | "POST" | "DELETE", path: string, body?: Record<string, unknown>) {
   await refreshMetaSettings();
-  const token = metaSetting("META_ACCESS_TOKEN");
+  const token = currentToken();
   if (!token) throw new MetaApiError("توکن دسترسی اینستاگرام تنظیم نشده است (تنظیمات → اتصال اینستاگرام)");
   let response: Response;
   try {
@@ -121,6 +135,32 @@ export async function testMetaConnection(): Promise<MetaConnectionTest> {
   }
 }
 
+/**
+ * Swaps a long-lived Instagram Login token for a fresh one (another 60 days). Meta allows this
+ * once the token is at least 24 hours old.
+ */
+export async function refreshInstagramToken(token: string) {
+  let response: Response;
+  try {
+    response = await fetch(`https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(token)}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    throw new MetaApiError(`ارتباط سرور با graph.instagram.com برقرار نشد (${error instanceof Error ? error.message : String(error)})`);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    let error: MetaErrorBody = { message: text.slice(0, 300) };
+    try {
+      error = { ...error, ...(JSON.parse(text) as { error?: MetaErrorBody }).error };
+    } catch {}
+    throw new MetaApiError(describeMetaError(response.status, error));
+  }
+  const data = JSON.parse(text) as { access_token?: string; expires_in?: number };
+  if (!data.access_token) throw new MetaApiError("Meta توکن تازه برنگرداند");
+  return { token: data.access_token, expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : null };
+}
+
 /** DM to the author of a comment (Instagram "private reply"); allowed once per comment, within 7 days. */
 export function sendPrivateReply(commentId: string, text: string, quickReplies?: QuickReply[] | null) {
   return graphRequest("POST", `/me/messages`, { recipient: { comment_id: commentId }, message: withQuickReplies(text, quickReplies) });
@@ -148,7 +188,7 @@ export function deleteComment(commentId: string) {
 /** The account whose media to list: "me" with an Instagram Login token, else the configured IG account id. */
 function mediaOwner() {
   if (getMetaApiHost() === "instagram") return "me";
-  const id = metaSetting("INSTAGRAM_ACCOUNT_IDS").split(",")[0]?.trim();
+  const id = currentAccountId();
   if (!id) throw new MetaApiError("ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید (تست اتصال آن را پر می‌کند)");
   return encodeURIComponent(id);
 }

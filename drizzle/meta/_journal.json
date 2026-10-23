@@ -43,6 +43,13 @@
       "when": 1792709513706,
       "tag": "0005_keen_major_mapleleaf",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1792714804337,
+      "tag": "0006_awesome_terrax",
+      "breakpoints": true
     }
   ]
 }

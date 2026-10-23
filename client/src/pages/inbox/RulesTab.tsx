@@ -4,6 +4,7 @@ import { joinMessages, MAX_BUTTON_TITLE, MAX_BUTTONS, splitMessages, type DmButt
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { trpc } from "@/lib/trpc";
 import { MultiMessageEditor } from "./MultiMessageEditor";
+import { pageName } from "./PageSwitcher";
 import type { RouterOutputs } from "./types";
 import { errorMessage, faNum, StatusPill, Switch } from "./ui";
 
@@ -356,6 +357,43 @@ export function RuleTester({ posts }: { posts: Post[] }) {
 }
 type RuleScope = "all" | "comment" | "dm" | "post" | "off";
 
+/** A page without rules can start from another page's rules and templates. */
+function CopyRules() {
+  const utils = trpc.useUtils();
+  const status = trpc.inbox.status.useQuery();
+  const pages = trpc.accounts.list.useQuery();
+  const others = (pages.data ?? []).filter((p) => p.id !== status.data?.accountId);
+  const [from, setFrom] = useState("");
+  const source = from || others[0]?.id || "";
+  const copy = trpc.rules.copyFrom.useMutation({
+    onSuccess: () => {
+      utils.rules.list.invalidate();
+      utils.templates.list.invalidate();
+      utils.approvals.list.invalidate();
+    },
+  });
+  if (!others.length) return null;
+  return (
+    <>
+      <div className="copy-rules">
+        <span>یا شروع با قوانین و قالب‌های</span>
+        {others.length > 1 ? (
+          <select value={source} onChange={(e) => setFrom(e.target.value)} aria-label="پیج مبدأ" dir="ltr">
+            {others.map((p) => <option key={p.id} value={p.id}>{pageName(p)}</option>)}
+          </select>
+        ) : (
+          <b dir="ltr">{pageName(others[0])}</b>
+        )}
+        <button type="button" className="secondary-button" disabled={copy.isPending || !source} onClick={() => copy.mutate({ fromAccountId: source })}>
+          {copy.isPending ? "در حال کپی…" : "کپی به این پیج"}
+        </button>
+      </div>
+      {copy.data?.skipped ? <span>{faNum(copy.data.skipped)} قانون مخصوص پست‌های آن پیج کپی نشد.</span> : null}
+      {copy.error && <span className="error-text">{errorMessage(copy.error)}</span>}
+    </>
+  );
+}
+
 /** The rules as cards; creating and editing happen in a side panel. */
 export function RulesTab({ rules, templates, posts, error }: { rules: Rule[]; templates: Template[]; posts: Post[]; error?: string }) {
   const [search, setSearch] = useState("");
@@ -397,7 +435,12 @@ export function RulesTab({ rules, templates, posts, error }: { rules: Rule[]; te
         ))}
       </div>
       {!shown.length && (
-        <div className="approval-empty"><Workflow size={22} /><b>{rules.length ? "قانونی با این فیلتر نیست" : "هنوز قانونی ساخته نشده"}</b><span>{rules.length ? "جستجو یا فیلتر را تغییر دهید." : "با «قانون جدید» اولین قانون را بسازید."}</span></div>
+        <div className="approval-empty">
+          <Workflow size={22} />
+          <b>{rules.length ? "قانونی با این فیلتر نیست" : "این پیج هنوز قانونی ندارد"}</b>
+          <span>{rules.length ? "جستجو یا فیلتر را تغییر دهید." : "با «قانون جدید» اولین قانون را بسازید."}</span>
+          {!rules.length && !error && <CopyRules />}
+        </div>
       )}
       <Sheet open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <SheetContent side="left" dir="rtl" className="rule-sheet w-full sm:max-w-xl overflow-y-auto">

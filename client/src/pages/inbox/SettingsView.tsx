@@ -3,6 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { APP_BUILD, CHANGELOG } from "@/version";
 import { DiagnosticsCard } from "./DiagnosticsCard";
 import { MetaConnectionCard } from "./MetaConnectionCard";
+import { PagesCard } from "./PagesCard";
 import type { InboxStatus } from "./types";
 import { errorMessage, relativeTime, StatusPill, Switch } from "./ui";
 
@@ -13,14 +14,6 @@ function Row({ title, detail, ok, onToggle }: { title: string; detail: string; o
       <Switch on={ok} label={title} onToggle={onToggle} />
     </div>
   );
-}
-
-/** The accounts card only shows the allowlist; the field lives in the connection card below. */
-function editAccountIds() {
-  const input = document.getElementById("meta-account-ids") as HTMLInputElement | null;
-  input?.scrollIntoView({ behavior: "smooth", block: "center" });
-  input?.focus();
-  input?.select();
 }
 
 function AutoReplyRow({ enabled }: { enabled: boolean }) {
@@ -54,15 +47,8 @@ export function SettingsView({ status }: { status: InboxStatus | undefined }) {
       <section className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> SETTINGS / WORKSPACE</div><h1>تنظیمات سپند</h1><p>اتصال اینستاگرام، ذخیره‌سازی و کنترل‌های ارسال را از همین‌جا مدیریت کنید.</p></div></section>
       <div className="settings-grid">
         <div className="settings-column">
-          <div className="settings-card account-manager-card">
-            <div className="settings-card-head"><div className="settings-symbol instagram"><Instagram size={20} /></div><div><h3>حساب‌های اینستاگرام</h3><span>حساب‌هایی که پیام‌هایشان پذیرفته می‌شود</span></div><StatusPill tone={status?.metaConfigured ? "green" : "orange"}>{status?.metaConfigured ? "متصل" : "پیکربندی ناقص"}</StatusPill></div>
-            <div className="account-list">
-              {status?.accountIds.length ? status.accountIds.map((id) => (
-                <div className="connected-account" key={id}><div className="account-avatar large account-tone-gold"><Instagram size={20} /></div><div><b dir="ltr">{id}</b><span>@sepandsteel</span></div><StatusPill tone="green">مجاز</StatusPill><button type="button" className="secondary-button compact-button" onClick={editAccountIds}>ویرایش</button></div>
-              )) : <div className="settings-warning"><AlertCircle size={16} /><span>هیچ شناسه‌ای تنظیم نشده؛ رویداد همه حساب‌های این برنامه Meta پذیرفته می‌شود. برای امنیت بیشتر شناسهٔ حساب را در «اتصال اینستاگرام» وارد کنید.</span></div>}
-            </div>
-            {!status?.metaConfigured && <div className="settings-warning"><AlertCircle size={16} /><span>برای دریافت و ارسال واقعی، توکن دسترسی، App Secret و Verify Token را در کارت «اتصال اینستاگرام» وارد کنید.</span></div>}
-          </div>
+          <PagesCard activeId={status?.accountId ?? null} />
+          {!status?.metaConfigured && <div className="settings-warning"><AlertCircle size={16} /><span>برای دریافت و ارسال واقعی، App Secret و Verify Token را در کارت «اتصال اینستاگرام» وارد کنید و دست‌کم یک پیج وصل کنید.</span></div>}
           <MetaConnectionCard />
           <div className="settings-card compact-info">
             <div className="settings-card-head"><div className="settings-symbol gold"><Instagram size={19} /></div><div><h3>آخرین پیام دریافت‌شده از Meta</h3><span>اگر کامنت یا دایرکت تازه‌ای گذاشتید و این زمان تغییر نکرد، Meta رویداد را نفرستاده است</span></div></div>

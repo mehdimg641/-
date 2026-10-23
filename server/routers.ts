@@ -6,9 +6,11 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { clientKey, isLocalAuth, LOCAL_SESSION_MS, LocalAuthError, localLogin } from "./_core/localAuth";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, publicProcedure, router } from "./_core/trpc";
+import { addAccount, asAccount, enabledAccounts, refreshAccount, refreshDueToken, resolveAccount, summarize } from "./accounts";
 import {
   applyRulesToUnanswered,
   buildThreads,
+  copyRulesFrom,
   importHistory,
   redraftPending,
   importPostComments,
@@ -88,36 +90,59 @@ async function guard<T>(fn: () => Promise<T>) {
   }
 }
 
+/** The page the dashboard shows (X-Sepand-Account header), or the first connected page. */
+function requestedAccount(req: { headers?: Record<string, string | string[] | undefined> } | undefined) {
+  const header = req?.headers?.["x-sepand-account"];
+  return (Array.isArray(header) ? header[0] : header)?.trim() || null;
+}
+
+/**
+ * Admin procedures that work on one page: `ctx.accountId` is that page (undefined before any page
+ * is connected, which shows everything) and Graph calls use its token.
+ */
+const pageProcedure = adminProcedure.use(async ({ ctx, next }) => {
+  const store = await getInboxStore();
+  await refreshMetaSettings();
+  const account = await resolveAccount(store, requestedAccount(ctx.req));
+  const accountId = account?.id ?? allowedAccountIds()[0];
+  return asAccount(store, accountId, () => next({ ctx: { ...ctx, accountId } }));
+});
+
+function requirePage(accountId: string | undefined) {
+  if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا یک پیج را در تنظیمات وصل کنید" });
+  return accountId;
+}
+
 // Everything that reads customer messages or sends replies is admin-only:
 // any Manus account can sign in, but only the owner (OWNER_OPEN_ID) is admin by default.
 const inboxRouter = router({
-  status: adminProcedure.query(async () => {
-    await refreshMetaSettings();
+  status: pageProcedure.query(async ({ ctx }) => {
     const store = await getInboxStore();
+    // Tokens stay alive without a cron: the dashboard polls this every few minutes.
+    await refreshDueToken(store).catch(() => undefined);
     return {
-      metaConfigured: isMetaWebhookConfigured(),
+      metaConfigured: isMetaWebhookConfigured() || (await enabledAccounts(store)).length > 0,
       autoReply: isAutoReplyEnabled(),
       apiHost: getMetaApiHost(),
-      accountIds: allowedAccountIds(),
+      accountIds: allowedAccountIds((await enabledAccounts(store)).map((a) => a.id)),
+      accountId: ctx.accountId ?? null,
       persistent: store.persistent,
-      lastEventAt: (await store.listEvents(1))[0]?.createdAt ?? null,
+      lastEventAt: (await store.listEvents(1, ctx.accountId))[0]?.createdAt ?? null,
       /** The installed build (from version.json); the Node.js package doesn't write one. */
       serverVersion: null as { version: string; commit: string; builtAt: string } | null,
     };
   }),
-  threads: adminProcedure.query(async () => buildThreads(await getInboxStore())),
+  threads: pageProcedure.query(async ({ ctx }) => buildThreads(await getInboxStore(), ctx.accountId)),
   /** Pulls recent comments and DMs that arrived before the webhook worked. */
-  importHistory: adminProcedure.mutation(async () => {
-    await refreshMetaSettings();
-    const accountId = allowedAccountIds()[0] ?? "";
-    if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید" });
+  importHistory: pageProcedure.mutation(async ({ ctx }) => {
+    const accountId = requirePage(ctx.accountId);
     return meta(async () => importHistory(await getInboxStore(), accountId));
   }),
-  stats: adminProcedure.query(async () => inboxStats(await getInboxStore())),
-  markRead: adminProcedure
+  stats: pageProcedure.query(async ({ ctx }) => inboxStats(await getInboxStore(), ctx.accountId)),
+  markRead: pageProcedure
     .input(z.object({ kind: z.enum(["comment", "dm"]), senderId: z.string().min(1) }))
-    .mutation(async ({ input }) => {
-      await (await getInboxStore()).markRead(input.kind, input.senderId);
+    .mutation(async ({ input, ctx }) => {
+      await (await getInboxStore()).markRead(requirePage(ctx.accountId), input.kind, input.senderId);
       return { success: true } as const;
     }),
   /** ❤️ on a customer's DM. */
@@ -142,7 +167,7 @@ const inboxRouter = router({
 });
 
 const approvalsRouter = router({
-  list: adminProcedure.query(async () => listApprovals(await getInboxStore())),
+  list: pageProcedure.query(async ({ ctx }) => listApprovals(await getInboxStore(), ctx.accountId)),
   approve: adminProcedure
     .input(z.object({ id: z.number().int(), text: z.string().trim().min(1).max(1000).optional() }))
     .mutation(async ({ input, ctx }) => guard(async () => sendReply(await getInboxStore(), input.id, ctx.user.id, input.text))),
@@ -221,34 +246,37 @@ const approvalsRouter = router({
   ),
 });
 
+/** Drafts of this page follow its rules and templates as they are now. */
+const redraft = async (store: Awaited<ReturnType<typeof getInboxStore>>, accountId: string | undefined) => (await redraftPending(store, new Date(), accountId)).updated;
+
 const rulesRouter = router({
-  list: adminProcedure.query(async () => {
-    const rules = await (await getInboxStore()).listRules();
+  list: pageProcedure.query(async ({ ctx }) => {
+    const rules = await (await getInboxStore()).listRules(ctx.accountId);
     return rules.sort((a, b) => a.priority - b.priority || a.id - b.id);
   }),
-  create: adminProcedure.input(ruleInput).mutation(async ({ input }) => {
+  create: pageProcedure.input(ruleInput).mutation(async ({ input, ctx }) => {
     assertRuleReplies(input);
     const store = await getInboxStore();
-    const rule = await store.createRule(input);
-    return { ...rule, redrafted: (await redraftPending(store)).updated };
+    const rule = await store.createRule({ ...input, accountId: ctx.accountId ?? null });
+    return { ...rule, redrafted: await redraft(store, ctx.accountId) };
   }),
-  update: adminProcedure
+  update: pageProcedure
     .input(z.object({ id: z.number().int(), patch: ruleInput.partial() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const store = await getInboxStore();
-      const current = (await store.listRules()).find((r) => r.id === input.id);
+      const current = (await store.listRules(ctx.accountId)).find((r) => r.id === input.id);
       if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
       assertRuleReplies({ ...current, ...input.patch });
       const rule = (await store.updateRule(input.id, input.patch))!;
       // Pending drafts follow the rule as it is now.
-      return { ...rule, redrafted: (await redraftPending(store)).updated };
+      return { ...rule, redrafted: await redraft(store, ctx.accountId) };
     }),
   /** Which rules a sample message would trigger, in order, and the reply the first one drafts. */
-  test: adminProcedure
+  test: pageProcedure
     .input(z.object({ channel: z.enum(["comment", "dm"]), text: z.string().trim().min(1).max(1000), mediaId: z.string().trim().min(1).max(64).nullable() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const store = await getInboxStore();
-      const [rules, templates] = await Promise.all([store.listRules(), store.listTemplates()]);
+      const [rules, templates] = await Promise.all([store.listRules(ctx.accountId), store.listTemplates(ctx.accountId)]);
       const matches = matchingRules(rules, input.channel, input.text, input.mediaId);
       const decision = decideReply(rules, templates, input.channel, "", input.text, input.mediaId);
       return {
@@ -259,27 +287,38 @@ const rulesRouter = router({
       };
     }),
   /** Drafts replies for messages that arrived before a matching rule existed. */
-  applyToUnanswered: adminProcedure.mutation(async () => applyRulesToUnanswered(await getInboxStore())),
-  delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+  applyToUnanswered: pageProcedure.mutation(async ({ ctx }) => applyRulesToUnanswered(await getInboxStore(), ctx.accountId)),
+  delete: pageProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input, ctx }) => {
     const store = await getInboxStore();
+    if (!(await store.listRules(ctx.accountId)).some((r) => r.id === input.id)) throw new TRPCError({ code: "NOT_FOUND", message: "قانون پیدا نشد" });
     await store.deleteRule(input.id);
-    return { success: true as const, redrafted: (await redraftPending(store)).updated };
+    return { success: true as const, redrafted: await redraft(store, ctx.accountId) };
   }),
+  /** A new page starts with another page's rules and templates. */
+  copyFrom: pageProcedure.input(z.object({ fromAccountId: z.string().trim().min(1).max(64) })).mutation(async ({ input, ctx }) =>
+    guard(async () => {
+      const store = await getInboxStore();
+      const result = await copyRulesFrom(store, input.fromAccountId, requirePage(ctx.accountId));
+      return { ...result, redrafted: await redraft(store, ctx.accountId) };
+    }),
+  ),
 });
 
 const templatesRouter = router({
-  list: adminProcedure.query(async () => (await getInboxStore()).listTemplates()),
-  create: adminProcedure.input(templateInput).mutation(async ({ input }) => (await getInboxStore()).createTemplate(input)),
-  update: adminProcedure.input(z.object({ id: z.number().int(), patch: templateInput.partial() })).mutation(async ({ input }) => {
+  list: pageProcedure.query(async ({ ctx }) => (await getInboxStore()).listTemplates(ctx.accountId)),
+  create: pageProcedure.input(templateInput).mutation(async ({ input, ctx }) => (await getInboxStore()).createTemplate({ ...input, accountId: ctx.accountId ?? null })),
+  update: pageProcedure.input(z.object({ id: z.number().int(), patch: templateInput.partial() })).mutation(async ({ input, ctx }) => {
     const store = await getInboxStore();
+    if (!(await store.listTemplates(ctx.accountId)).some((t) => t.id === input.id)) throw new TRPCError({ code: "NOT_FOUND", message: "قالب پیدا نشد" });
     const template = await store.updateTemplate(input.id, input.patch);
     if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "قالب پیدا نشد" });
     // Rules that use this template now draft the new text.
-    return { ...template, redrafted: (await redraftPending(store)).updated };
+    return { ...template, redrafted: await redraft(store, ctx.accountId) };
   }),
-  delete: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {
+  delete: pageProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input, ctx }) => {
     const store = await getInboxStore();
-    const used = (await store.listRules()).filter((r) => r.templateId === input.id || r.dmTemplateId === input.id);
+    if (!(await store.listTemplates(ctx.accountId)).some((t) => t.id === input.id)) throw new TRPCError({ code: "NOT_FOUND", message: "قالب پیدا نشد" });
+    const used = (await store.listRules(ctx.accountId)).filter((r) => r.templateId === input.id || r.dmTemplateId === input.id);
     if (used.length) throw new TRPCError({ code: "CONFLICT", message: `این قالب در قانون «${used[0].name}» استفاده شده؛ ابتدا قانون را تغییر دهید` });
     await store.deleteTemplate(input.id);
     return { success: true } as const;
@@ -299,15 +338,41 @@ async function meta<T>(fn: () => Promise<T>) {
 const mediaIdInput = z.object({ mediaId: z.string().trim().min(1).max(64) });
 
 const postsRouter = router({
-  list: adminProcedure.query(async () => listPosts(await getInboxStore())),
-  sync: adminProcedure.mutation(async () => meta(async () => syncPosts(await getInboxStore()))),
-  comments: adminProcedure.input(mediaIdInput).query(async ({ input }) => postComments(await getInboxStore(), input.mediaId)),
+  list: pageProcedure.query(async ({ ctx }) => listPosts(await getInboxStore(), ctx.accountId)),
+  sync: pageProcedure.mutation(async ({ ctx }) => meta(async () => syncPosts(await getInboxStore(), ctx.accountId))),
+  comments: pageProcedure.input(mediaIdInput).query(async ({ input, ctx }) => postComments(await getInboxStore(), input.mediaId, ctx.accountId)),
   /** One slice of a post's comments; call again with `after` = the returned `next` until it is null. */
-  importComments: adminProcedure.input(mediaIdInput.extend({ after: z.string().max(1000).nullable().optional() })).mutation(async ({ input }) => {
-    await refreshMetaSettings();
-    const accountId = allowedAccountIds()[0] ?? "";
-    if (!accountId) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "ابتدا شناسهٔ حساب اینستاگرام را در تنظیمات وارد کنید" });
+  importComments: pageProcedure.input(mediaIdInput.extend({ after: z.string().max(1000).nullable().optional() })).mutation(async ({ input, ctx }) => {
+    const accountId = requirePage(ctx.accountId);
     return meta(async () => importPostComments(await getInboxStore(), input.mediaId, accountId, { after: input.after }));
+  }),
+});
+
+const tokenInput = z.string().trim().min(20, "توکن کامل نیست").max(1000);
+
+// Connected pages. Tokens are write-only: the dashboard only ever sees a masked preview.
+const accountsRouter = router({
+  list: adminProcedure.query(async () => (await enabledAccounts(await getInboxStore())).map(summarize)),
+  /** Connects a page from its access token; Meta says which account it is. */
+  add: adminProcedure.input(z.object({ token: tokenInput })).mutation(async ({ input }) => guard(async () => addAccount(await getInboxStore(), input.token))),
+  updateToken: adminProcedure
+    .input(z.object({ id: z.string().trim().min(1).max(64), token: tokenInput }))
+    .mutation(async ({ input }) => guard(async () => addAccount(await getInboxStore(), input.token, input.id))),
+  refresh: adminProcedure.input(z.object({ id: z.string().trim().min(1).max(64) })).mutation(async ({ input }) =>
+    guard(async () => {
+      const store = await getInboxStore();
+      const account = await store.getAccount(input.id);
+      if (!account) throw new TRPCError({ code: "NOT_FOUND", message: "پیج پیدا نشد" });
+      await refreshAccount(store, account);
+      return summarize((await store.getAccount(input.id))!);
+    }),
+  ),
+  /** Disconnects a page; its messages, rules and templates stay, and adding it again brings them back. */
+  remove: adminProcedure.input(z.object({ id: z.string().trim().min(1).max(64) })).mutation(async ({ input }) => {
+    const store = await getInboxStore();
+    if (!(await store.getAccount(input.id))) throw new TRPCError({ code: "NOT_FOUND", message: "پیج پیدا نشد" });
+    await store.updateAccount(input.id, { enabled: false });
+    return { success: true } as const;
   }),
 });
 
@@ -356,13 +421,15 @@ const settingsRouter = router({
       } catch (error) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: error instanceof Error ? error.message : String(error) });
       }
+      // A token saved here is also that page's token (it would otherwise keep the old one).
+      if (input.accessToken) await addAccount(await getInboxStore(), input.accessToken).catch(() => undefined);
       return { success: true } as const;
     }),
-  testMeta: adminProcedure.mutation(async () => testMetaConnection()),
+  testMeta: pageProcedure.mutation(async () => testMetaConnection()),
   /** Why the inbox may be empty: does Meta call in, and is the account subscribed to the webhook fields? */
-  diagnostics: adminProcedure.query(async () => {
+  diagnostics: pageProcedure.query(async ({ ctx }) => {
     const store = await getInboxStore();
-    const [events, media] = await Promise.all([store.listEvents(5000), store.listMedia()]);
+    const [events, media] = await Promise.all([store.listEvents(5000, ctx.accountId), store.listMedia(ctx.accountId)]);
     let subscription: { ok: true; fields: string[]; missing: string[] } | { ok: false; error: string };
     try {
       subscription = { ok: true, ...(await getWebhookSubscription()) };
@@ -380,7 +447,7 @@ const settingsRouter = router({
       },
     };
   }),
-  subscribeWebhooks: adminProcedure.mutation(async () => meta(subscribeWebhooks)),
+  subscribeWebhooks: pageProcedure.mutation(async () => meta(subscribeWebhooks)),
 });
 
 export const appRouter = router({
@@ -414,6 +481,7 @@ export const appRouter = router({
   rules: rulesRouter,
   templates: templatesRouter,
   posts: postsRouter,
+  accounts: accountsRouter,
   settings: settingsRouter,
 });
 

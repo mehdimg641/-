@@ -1,4 +1,5 @@
-import type { IgEvent, Reply, ReplyRule } from "../drizzle/schema";
+import type { IgEvent, Reply, ReplyRule, ReplyTemplate } from "../drizzle/schema";
+import { asAccount } from "./accounts";
 import {
   DM_INVITE_TEXT,
   DM_WINDOW_CLOSED,
@@ -70,9 +71,9 @@ function closedChannels(event: Pick<IgEvent, "kind" | "createdAt">, now = new Da
 }
 
 /** Each sender's latest DM: a DM stays answerable for 24 hours after it. */
-async function latestDms(store: InboxStore) {
+async function latestDms(store: InboxStore, accountId?: string) {
   const latest = new Map<string, Date>();
-  for (const event of await store.listEvents(THREAD_EVENT_LIMIT)) {
+  for (const event of await store.listEvents(THREAD_EVENT_LIMIT, accountId)) {
     if (event.kind !== "dm") continue;
     const seen = latest.get(event.senderId);
     if (!seen || event.createdAt > seen) latest.set(event.senderId, event.createdAt);
@@ -110,7 +111,7 @@ async function resolveTap(store: InboxStore, event: IncomingEvent, rules: ReplyR
   if (!tap) {
     const typed = normalizeText(event.text).trim();
     const now = Date.now();
-    const sources = (await store.listEvents(THREAD_EVENT_LIMIT)).filter((e) => e.senderId === event.senderId);
+    const sources = (await store.listEvents(THREAD_EVENT_LIMIT, event.accountId)).filter((e) => e.senderId === event.senderId);
     const offered = (await store.listReplies({ status: "sent", eventIds: sources.map((e) => e.id) }))
       .filter((r) => r.quickReplies?.length && r.sentAt && now - r.sentAt.getTime() <= TAP_WINDOW_MS)
       .sort((a, b) => (b.sentAt?.getTime() ?? 0) - (a.sentAt?.getTime() ?? 0));
@@ -130,6 +131,16 @@ async function resolveTap(store: InboxStore, event: IncomingEvent, rules: ReplyR
   return { rule, parts: splitMessages(renderTemplate(button.reply, source?.username ?? "")) };
 }
 
+/** Each page's rules and templates, read once per call. */
+function pageRules(store: InboxStore) {
+  const cache = new Map<string, Promise<[ReplyRule[], ReplyTemplate[]]>>();
+  return (accountId: string) => {
+    let entry = cache.get(accountId);
+    if (!entry) cache.set(accountId, (entry = Promise.all([store.listRules(accountId), store.listTemplates(accountId)])));
+    return entry;
+  };
+}
+
 /**
  * Stores events and drafts the replies their rules call for. Returns the reply ids to send right
  * away: auto-reply on and rule action "send", or the answer to a tapped button (approving the
@@ -137,13 +148,15 @@ async function resolveTap(store: InboxStore, event: IncomingEvent, rules: ReplyR
  * imported history passes `draft: false` (old messages shouldn't flood the queue) and `read: true`.
  */
 export async function ingestEvents(store: InboxStore, events: IncomingEvent[], options: { allowAutoSend?: boolean; draft?: boolean; read?: boolean } = {}) {
-  const [rules, templates] = events.length ? await Promise.all([store.listRules(), store.listTemplates()]) : [[], []];
+  // Each event is matched against its own page's rules.
+  const rulesFor = pageRules(store);
   const autoSend = (options.allowAutoSend ?? true) && isAutoReplyEnabled();
   const toSend: number[] = [];
   let stored = 0;
   let duplicates = 0;
 
   for (const event of events) {
+    const [rules, templates] = await rulesFor(event.accountId);
     const tap = options.draft === false ? null : await resolveTap(store, event, rules);
     const decision = tap ? null : decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
     const { at, payload: _payload, ...fields } = event;
@@ -177,19 +190,15 @@ const REDRAFT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * judged on its own: one with a sent, failed, rejected or manual reply is settled and left alone;
  * the pending drafts of the others are drafted again. Never sends anything.
  */
-export async function redraftPending(store: InboxStore, now = new Date()) {
-  const [events, rules, templates, pending] = await Promise.all([
-    store.listEvents(THREAD_EVENT_LIMIT),
-    store.listRules(),
-    store.listTemplates(),
-    store.listReplies({ status: "pending" }),
-  ]);
+export async function redraftPending(store: InboxStore, now = new Date(), accountId?: string) {
+  const [events, pending] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT, accountId), store.listReplies({ status: "pending" })]);
+  const rulesFor = pageRules(store);
   const withDrafts = new Set(pending.filter((r) => r.source === "rule").map((r) => r.eventId));
   const byId = new Map(events.map((e) => [e.id, e] as const));
   for (const id of Array.from(withDrafts)) {
     if (!byId.has(id)) {
       const event = await store.getEvent(id);
-      if (event) byId.set(id, event);
+      if (event && (accountId === undefined || event.accountId === accountId)) byId.set(id, event);
     }
   }
   const candidates = Array.from(byId.values()).filter((e) => withDrafts.has(e.id) || now.getTime() - e.createdAt.getTime() <= REDRAFT_WINDOW_MS);
@@ -204,6 +213,7 @@ export async function redraftPending(store: InboxStore, now = new Date()) {
     const closed = closedChannels(event, now);
     const open = (channel: Reply["channel"]) => !sent.has(channel) && !closed.has(channel);
     const drafts = own.filter((r) => r.status === "pending" && r.source === "rule" && open(r.channel));
+    const [rules, templates] = await rulesFor(event.accountId);
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
     const ruleId = decision?.rule.id ?? null;
     const wanted = decision ? draftParts(event, decision).filter((p) => open(p.channel)) : [];
@@ -232,14 +242,16 @@ export async function redraftPending(store: InboxStore, now = new Date()) {
  * Runs the current rules over events that never got any reply or draft (e.g. they arrived before
  * the rule existed). Drafts always wait for approval; nothing is sent automatically.
  */
-export async function applyRulesToUnanswered(store: InboxStore) {
+export async function applyRulesToUnanswered(store: InboxStore, accountId?: string) {
   // First bring drafts already in the queue up to date with the current rules.
-  const { updated } = await redraftPending(store);
-  const [events, rules, templates] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules(), store.listTemplates()]);
+  const { updated } = await redraftPending(store, new Date(), accountId);
+  const events = await store.listEvents(THREAD_EVENT_LIMIT, accountId);
+  const rulesFor = pageRules(store);
   const answered = new Set((await store.listReplies({ eventIds: events.map((e) => e.id) })).map((r) => r.eventId));
   let drafted = 0;
   for (const event of events) {
     if (answered.has(event.id)) continue;
+    const [rules, templates] = await rulesFor(event.accountId);
     const decision = decideReply(rules, templates, event.kind, event.username ?? "", event.text, event.mediaId);
     if (!decision) continue;
     if ((await createDrafts(store, event, decision)).length) drafted++;
@@ -261,7 +273,7 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
   try {
     if (!text) throw new Error("متن پاسخ خالی است");
     // Past Instagram's deadline the API only answers with an error; say why without calling it.
-    const deadline = deadlineOf(event, reply.channel, event.kind === "dm" ? await latestDms(store) : new Map());
+    const deadline = deadlineOf(event, reply.channel, event.kind === "dm" ? await latestDms(store, event.accountId) : new Map());
     if (deadline && deadline <= new Date()) throw new Error(reply.channel === "private" ? PRIVATE_WINDOW_CLOSED : DM_WINDOW_CLOSED);
     const buttons = reply.quickReplies?.length ? reply.quickReplies : null;
     const send = (body: string, quickReplies: QuickReply[] | null) =>
@@ -271,15 +283,17 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
           ? replyToComment(event.externalId, body)
           : sendDirectMessage(event.senderId, body, quickReplies);
     let sentText = text;
-    let result: Record<string, unknown>;
-    try {
-      result = await send(text, buttons);
-    } catch (error) {
-      // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
-      if (!buttons) throw error;
-      sentText = optionsAsText(text, buttons);
-      result = await send(sentText, null);
-    }
+    // Always as the page the message came to, whatever page the dashboard shows.
+    const result = await asAccount(store, event.accountId, async () => {
+      try {
+        return await send(text, buttons);
+      } catch (error) {
+        // If Instagram refuses the buttons, send the options as text; typing one still counts as a tap.
+        if (!buttons) throw error;
+        sentText = optionsAsText(text, buttons);
+        return send(sentText, null);
+      }
+    });
     // Kept so a customer's reaction to this DM (message_reactions webhook) finds it.
     const externalId = typeof result.message_id === "string" ? result.message_id : typeof result.id === "string" ? result.id : null;
     await store.updateReply(replyId, { text: sentText, status: "sent", error: null, decidedBy: operatorId, sentAt: new Date(), externalId });
@@ -295,7 +309,7 @@ export async function sendReply(store: InboxStore, replyId: number, operatorId: 
 export async function reactToEvent(store: InboxStore, eventId: number, on: boolean) {
   const event = await store.getEvent(eventId);
   if (!event || event.kind !== "dm") throw new ReplyStateError("فقط روی دایرکت می‌شود ریکشن گذاشت");
-  await reactToMessage(event.senderId, event.externalId, on);
+  await asAccount(store, event.accountId, () => reactToMessage(event.senderId, event.externalId, on));
   await store.setEventFlags(eventId, { reaction: on ? "love" : null });
 }
 
@@ -307,14 +321,14 @@ export async function moderateComment(store: InboxStore, eventId: number, action
   if (!event || event.kind !== "comment") throw new ReplyStateError("فقط کامنت‌ها را می‌شود مخفی یا حذف کرد");
   if (event.deleted) throw new ReplyStateError("این کامنت قبلاً حذف شده است");
   if (action === "delete") {
-    await deleteComment(event.externalId);
+    await asAccount(store, event.accountId, () => deleteComment(event.externalId));
     await store.setEventFlags(eventId, { deleted: true });
     for (const reply of await store.listReplies({ status: "pending", eventIds: [eventId] })) {
       if (await store.claimReply(reply.id, ["pending"])) await store.updateReply(reply.id, { status: "rejected", decidedBy: operatorId });
     }
     return;
   }
-  await setCommentHidden(event.externalId, action === "hide");
+  await asAccount(store, event.accountId, () => setCommentHidden(event.externalId, action === "hide"));
   await store.setEventFlags(eventId, { hidden: action === "hide" });
 }
 
@@ -400,8 +414,8 @@ function ruleStyle(rules: ReplyRule[]) {
   };
 }
 
-export async function buildThreads(store: InboxStore): Promise<InboxThread[]> {
-  const [events, rules] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules()]);
+export async function buildThreads(store: InboxStore, accountId?: string): Promise<InboxThread[]> {
+  const [events, rules] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT, accountId), store.listRules(accountId)]);
   const allReplies = await store.listReplies({ eventIds: events.map((e) => e.id) });
   const style = ruleStyle(rules);
   const repliesByEvent = new Map<number, Reply[]>();
@@ -462,21 +476,21 @@ export async function buildThreads(store: InboxStore): Promise<InboxThread[]> {
   return Array.from(threads.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
-export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> {
+export async function listApprovals(store: InboxStore, accountId?: string): Promise<ApprovalItem[]> {
   const [pending, failed, rules] = await Promise.all([
     store.listReplies({ status: "pending" }),
     store.listReplies({ status: "failed" }),
-    store.listRules(),
+    store.listRules(accountId),
   ]);
   const style = ruleStyle(rules);
   const open = [...pending, ...failed];
   const sent = await store.listReplies({ status: "sent", eventIds: Array.from(new Set(open.map((r) => r.eventId))) });
   const answered = new Set(sent.map((r) => r.eventId));
-  const dms = await latestDms(store);
+  const dms = await latestDms(store, accountId);
   const items: ApprovalItem[] = [];
   for (const reply of open) {
     const event = await store.getEvent(reply.eventId);
-    if (!event) continue;
+    if (!event || (accountId !== undefined && event.accountId !== accountId)) continue;
     const { tag, tone } = style(reply.ruleId);
     items.push({
       id: reply.id,
@@ -502,9 +516,9 @@ export async function listApprovals(store: InboxStore): Promise<ApprovalItem[]> 
   return items.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
-export async function inboxStats(store: InboxStore) {
-  const threads = await buildThreads(store);
-  const events = await store.listEvents(THREAD_EVENT_LIMIT);
+export async function inboxStats(store: InboxStore, accountId?: string) {
+  const threads = await buildThreads(store, accountId);
+  const events = await store.listEvents(THREAD_EVENT_LIMIT, accountId);
   const replies = await store.listReplies({ eventIds: events.map((e) => e.id) });
   const sent = replies.filter((r) => r.status === "sent");
 
@@ -562,14 +576,14 @@ export type PostSummary = {
 };
 
 /** Pulls recent posts from Instagram into the media table. */
-export async function syncPosts(store: InboxStore) {
-  const media = await listRecentMedia();
-  await store.upsertMedia(media);
+export async function syncPosts(store: InboxStore, accountId?: string) {
+  const media = await asAccount(store, accountId, () => listRecentMedia());
+  await store.upsertMedia(media.map((m) => ({ ...m, accountId: accountId ?? null })));
   return { synced: media.length };
 }
 
-export async function listPosts(store: InboxStore): Promise<PostSummary[]> {
-  const [media, events, rules] = await Promise.all([store.listMedia(), store.listEvents(THREAD_EVENT_LIMIT), store.listRules()]);
+export async function listPosts(store: InboxStore, accountId?: string): Promise<PostSummary[]> {
+  const [media, events, rules] = await Promise.all([store.listMedia(accountId), store.listEvents(THREAD_EVENT_LIMIT, accountId), store.listRules(accountId)]);
   const comments = events.filter((e) => e.kind === "comment" && e.mediaId);
   const replies = await store.listReplies({ eventIds: comments.map((e) => e.id) });
   const posts = new Map<string, PostSummary>();
@@ -608,8 +622,8 @@ export type PostComment = {
 };
 
 /** Every comment on a post with its public reply and private DM, newest first. */
-export async function postComments(store: InboxStore, mediaId: string): Promise<PostComment[]> {
-  const [events, rules] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT), store.listRules()]);
+export async function postComments(store: InboxStore, mediaId: string, accountId?: string): Promise<PostComment[]> {
+  const [events, rules] = await Promise.all([store.listEvents(THREAD_EVENT_LIMIT, accountId), store.listRules(accountId)]);
   const comments = events.filter((e) => e.kind === "comment" && e.mediaId === mediaId);
   const replies = await store.listReplies({ eventIds: comments.map((e) => e.id) });
   const style = ruleStyle(rules);
@@ -647,10 +661,10 @@ export async function importPostComments(
   accountId: string,
   options: { draft?: boolean; read?: boolean; after?: string | null } = {},
 ) {
-  const { comments, next } = await listMediaComments(mediaId, options.after);
+  const { comments, next } = await asAccount(store, accountId, () => listMediaComments(mediaId, options.after));
   // Meta can leave out a comment's author; then the account's own comments are recognised by username.
   const anyUnknown = comments.some((c) => !c.fromId || c.replies.some((r) => !r.fromId));
-  const ownName = anyUnknown ? await ownUsername() : null;
+  const ownName = anyUnknown ? await asAccount(store, accountId, () => ownUsername()) : null;
   const isOwn = (c: { fromId: string | null; username: string | null }) => (c.fromId !== null && c.fromId === accountId) || (ownName !== null && c.username === ownName);
 
   type Item = { event: IncomingEvent; answer: { id: string; text: string; at: Date | null } | null };
@@ -715,12 +729,16 @@ const HISTORY_POSTS = 12;
  * for people without a role on the app while it is in Development mode.
  */
 export async function importHistory(store: InboxStore, accountId: string) {
+  return asAccount(store, accountId, () => importHistoryAs(store, accountId));
+}
+
+async function importHistoryAs(store: InboxStore, accountId: string) {
   // Without this subscription Meta sends no new events either.
   const subscription = await getWebhookSubscription().catch(() => null);
   if (subscription?.missing.length) await subscribeWebhooks().catch(() => undefined);
 
-  await syncPosts(store);
-  const posts = (await store.listMedia())
+  await syncPosts(store, accountId);
+  const posts = (await store.listMedia(accountId))
     .filter((m) => (m.commentsCount ?? 0) > 0)
     .sort((a, b) => (b.postedAt?.getTime() ?? 0) - (a.postedAt?.getTime() ?? 0))
     .slice(0, HISTORY_POSTS);
@@ -750,4 +768,36 @@ export async function importHistory(store: InboxStore, accountId: string) {
     dms.error = error instanceof Error ? error.message : String(error);
   }
   return { comments, dms };
+}
+
+/**
+ * Starts a page off with another page's templates and rules. Rules point at the copied templates;
+ * rules limited to the other page's posts are left out, since those posts aren't on this page.
+ */
+export async function copyRulesFrom(store: InboxStore, fromAccountId: string, toAccountId: string) {
+  if (fromAccountId === toAccountId) throw new ReplyStateError("مبدأ و مقصد یک پیج است");
+  const [templates, rules] = await Promise.all([store.listTemplates(fromAccountId), store.listRules(fromAccountId)]);
+  const own = (row: { accountId: string | null }) => row.accountId === fromAccountId;
+  const ids = new Map<number, number>();
+  for (const t of templates.filter(own)) {
+    const copy = await store.createTemplate({ accountId: toAccountId, title: t.title, category: t.category, text: t.text });
+    ids.set(t.id, copy.id);
+  }
+  let copied = 0;
+  let skipped = 0;
+  for (const r of rules.filter(own)) {
+    if (r.mediaIds?.length) {
+      skipped++;
+      continue;
+    }
+    const { id: _id, createdAt: _c, updatedAt: _u, ...fields } = r;
+    await store.createRule({
+      ...fields,
+      accountId: toAccountId,
+      templateId: r.templateId == null ? null : (ids.get(r.templateId) ?? null),
+      dmTemplateId: r.dmTemplateId == null ? null : (ids.get(r.dmTemplateId) ?? null),
+    });
+    copied++;
+  }
+  return { rules: copied, templates: ids.size, skipped };
 }

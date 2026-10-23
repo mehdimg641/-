@@ -6,6 +6,7 @@ $lib = __DIR__ . '/../../deploy/php/api/lib';
 require "$lib/bootstrap.php";
 require "$lib/superjson.php";
 require "$lib/settings.php";
+require "$lib/accounts.php";
 require "$lib/rules.php";
 require "$lib/meta_webhook.php";
 require "$lib/graph.php";
@@ -67,5 +68,14 @@ check('meta error: deleted comment', describe_meta_error(400, ['message' => "Obj
 check('meta error: temporary', describe_meta_error(500, ['message' => 'An unknown error has occurred.', 'code' => 1, 'fbtrace_id' => 'Xy']),
     'خطای موقت سرور اینستاگرام؛ چند دقیقه بعد دوباره امتحان کنید. — Meta API 500: An unknown error has occurred. (کد 1 · trace Xy)');
 check('meta error: plain', describe_meta_error(400, ['message' => 'Error validating access token']), 'Meta API 400: Error validating access token');
+// Pages: each page's rows are filtered, and Graph calls use the page's token.
+$args = [];
+check('page rows sql', [page_rows_sql('accountId', '222', $args), $args], ['(accountId IS NULL OR accountId = ?)', ['222']]);
+$args = [];
+check('no page: no filter', [page_events_sql('accountId', null, $args), $args], ['1=1', []]);
+$GLOBALS['sepand_graph_account'] = null;
+check('graph token falls back to settings', with_token('9', 'IGAApage', 'current_graph_token'), 'IGAApage');
+check('graph token restored', $GLOBALS['sepand_graph_account'], null);
+
 echo $GLOBALS['fails'] ? "\n{$GLOBALS['fails']} failed\n" : "\nall passed\n";
 exit($GLOBALS['fails'] ? 1 : 0);

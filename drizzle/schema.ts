@@ -66,6 +66,8 @@ export type InsertIgEvent = typeof igEvents.$inferInsert;
 /** Keyword rules that turn an incoming event into a reply draft. Lower priority runs first. */
 export const replyRules = mysqlTable("replyRules", {
   id: int("id").autoincrement().primaryKey(),
+  /** The Instagram page this rule belongs to (igAccounts.id). Null on rows from before pages; they belong to the first page. */
+  accountId: varchar("accountId", { length: 64 }),
   name: varchar("name", { length: 120 }).notNull(),
   keywords: json("keywords").$type<string[]>().notNull(),
   channels: json("channels").$type<Array<"comment" | "dm">>().notNull(),
@@ -137,6 +139,8 @@ export type AppSetting = typeof appSettings.$inferSelect;
 /** Reusable reply texts, picked by rules or inserted into the composer. Supports {{username}}. */
 export const replyTemplates = mysqlTable("replyTemplates", {
   id: int("id").autoincrement().primaryKey(),
+  /** The page whose library this template is in; null on rows from before pages. */
+  accountId: varchar("accountId", { length: 64 }),
   title: varchar("title", { length: 120 }).notNull(),
   category: varchar("category", { length: 60 }).default("").notNull(),
   text: text("text").notNull(),
@@ -150,6 +154,8 @@ export type InsertReplyTemplate = typeof replyTemplates.$inferInsert;
 /** Instagram posts, synced from the Graph API so comments can be grouped and rules scoped per post. */
 export const igMedia = mysqlTable("igMedia", {
   id: varchar("id", { length: 64 }).primaryKey(),
+  /** The page that posted it; null on rows from before pages. */
+  accountId: varchar("accountId", { length: 64 }),
   caption: text("caption"),
   mediaType: varchar("mediaType", { length: 32 }),
   mediaUrl: text("mediaUrl"),
@@ -162,3 +168,25 @@ export const igMedia = mysqlTable("igMedia", {
 
 export type IgMedia = typeof igMedia.$inferSelect;
 export type InsertIgMedia = typeof igMedia.$inferInsert;
+
+/**
+ * Instagram pages connected to the dashboard. `id` is the professional account id, the same as
+ * the webhook's entry.id. Each page has its own token (encrypted like appSettings), rules,
+ * templates and posts.
+ */
+export const igAccounts = mysqlTable("igAccounts", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  username: varchar("username", { length: 64 }),
+  name: varchar("name", { length: 120 }),
+  /** AES-256-GCM encrypted access token. */
+  token: text("token").notNull(),
+  tokenExpiresAt: timestamp("tokenExpiresAt"),
+  tokenRefreshedAt: timestamp("tokenRefreshedAt"),
+  /** Last failure talking to Instagram for this page (e.g. a token refresh), shown in Settings. */
+  lastError: text("lastError"),
+  enabled: boolean("enabled").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type IgAccount = typeof igAccounts.$inferSelect;
+export type InsertIgAccount = typeof igAccounts.$inferInsert;
