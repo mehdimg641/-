@@ -48,3 +48,30 @@ export const weekday = (date: Date) => date.toLocaleDateString("fa-IR", { weekda
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "خطای ناشناخته";
 }
+
+/** Has a real username (not just Instagram's numeric sender id). */
+export const hasUsername = (handle: string) => !/^\d+$/.test(handle);
+
+/**
+ * Past the API's deadline a person can still send the text from the Instagram app: copies it and
+ * opens that customer's DM. Returns a note for the operator.
+ */
+export async function copyAndOpenDm(handle: string, text: string) {
+  // Open the tab first: browsers block popups that come after an await.
+  if (hasUsername(handle)) window.open(`https://ig.me/m/${encodeURIComponent(handle)}`, "_blank", "noopener");
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    return "کپی خودکار نشد؛ متن را از کادر بالا کپی کنید.";
+  }
+  return hasUsername(handle)
+    ? "متن کپی شد؛ در اینستاگرام بچسبانید و بفرستید، بعد «ارسال دستی شد» را بزنید."
+    : "متن کپی شد؛ نام کاربری معلوم نیست، دایرکت را خودتان در اینستاگرام پیدا کنید.";
+}
+
+/** "۵ ساعت" / "۲۰ دقیقه" until `end`, or "" once it has passed. */
+export function timeUntil(end: Date) {
+  const ms = end.getTime() - Date.now();
+  if (ms <= 0) return "";
+  return ms < 3_600_000 ? `${faNum(Math.max(1, Math.round(ms / 60_000)))} دقیقه` : `${faNum(Math.round(ms / 3_600_000))} ساعت`;
+}

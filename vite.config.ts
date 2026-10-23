@@ -1,6 +1,7 @@
 import { jsxLocPlugin } from "@builder.io/vite-plugin-jsx-loc";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { defineConfig, type Plugin, type ViteDevServer } from "vite";
@@ -150,10 +151,42 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
-const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
+/** Adds the umami script only when an analytics endpoint is configured; otherwise its placeholder URL 404s. */
+function vitePluginAnalytics(): Plugin {
+  return {
+    name: "sepand-analytics",
+    transformIndexHtml() {
+      const endpoint = process.env.VITE_ANALYTICS_ENDPOINT;
+      const websiteId = process.env.VITE_ANALYTICS_WEBSITE_ID;
+      if (!endpoint || !websiteId) return [];
+      return [{ tag: "script", attrs: { defer: true, src: `${endpoint}/umami`, "data-website-id": websiteId }, injectTo: "body" }];
+    },
+  };
+}
 
-export default defineConfig({
-  plugins,
+/** Version shown in the dashboard; the commit must match version.json so the page can spot a stale copy. */
+function appBuild() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf8")) as { version: string };
+  let commit = process.env.APP_COMMIT ?? "";
+  if (!commit) {
+    try {
+      commit = execSync("git rev-parse --short HEAD", { cwd: PROJECT_ROOT, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    } catch {
+      commit = "dev";
+    }
+  }
+  return { version: pkg.version, commit, builtAt: new Date().toISOString() };
+}
+
+export default defineConfig(({ command }) => ({
+  define: { __APP_BUILD__: JSON.stringify(appBuild()) },
+  plugins: [
+    react(),
+    tailwindcss(),
+    vitePluginAnalytics(),
+    // The Manus runtime and debug tooling only make sense in the Manus dev sandbox, not in a build.
+    ...(command === "build" ? [] : [jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()]),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -184,4 +217,4 @@ export default defineConfig({
       deny: ["**/.*"],
     },
   },
-});
+}));

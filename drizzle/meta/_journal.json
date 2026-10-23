@@ -15,6 +15,41 @@
       "when": 1792433703339,
       "tag": "0001_many_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1792493625477,
+      "tag": "0002_fluffy_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1792525477979,
+      "tag": "0003_goofy_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1792615064409,
+      "tag": "0004_needy_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1792709513706,
+      "tag": "0005_keen_major_mapleleaf",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1792714804337,
+      "tag": "0006_awesome_terrax",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,43 @@
+# Sepand Inbox (PHP edition) for cPanel / LiteSpeed / Apache.
+Options -Indexes
+DirectoryIndex index.html
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # Send HTTP to HTTPS (Meta webhooks and the login cookie need HTTPS).
+  RewriteCond %{HTTPS} off
+  RewriteCond %{HTTP:X-Forwarded-Proto} !https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+  RewriteRule ^api/trpc(/.*)?$ api/trpc.php [QSA,L]
+  RewriteRule ^api/meta/webhook/?$ api/webhook.php [QSA,L]
+  # Meta's privacy policy check needs a 200; LiteSpeed answers its byte-range request with 206.
+  RewriteRule ^(privacy|data-deletion)\.html$ api/page.php?name=$1 [L]
+
+  # Single-page app: unknown paths load the dashboard.
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_URI} !^/api/
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Never serve dotfiles, backups or scripts by accident.
+<FilesMatch "(^\.|\.(sql|md|log|bak|ps1|sh|example)$)">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# The page must be revalidated so an update shows up at once; its hashed assets never change.
+<IfModule mod_headers.c>
+  <FilesMatch "^(index\.html|version\.json)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "-[A-Za-z0-9_-]{8}\.(js|css|woff2?|png|jpe?g|svg)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>
