@@ -26,8 +26,15 @@ function event_row(array $row): array
     ];
 }
 
+// Telegram chats (telegram-bridge.php) are delivered by the Sepand Core, not Instagram. The bridge's
+// outbox picks up replies left "failed", so a queued one is stored that way with TELEGRAM_QUEUED as
+// its error, and shown as "sending" so the operator never sees a failure that is not one.
+const TELEGRAM_PAGE = 'telegram';
+const TELEGRAM_QUEUED = 'در صف تلگرام؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود';
+
 function reply_row(array $row): array
 {
+    $queued = $row['status'] === 'failed' && $row['error'] === TELEGRAM_QUEUED;
     return [
         'id' => (int) $row['id'],
         'eventId' => (int) $row['eventId'],
@@ -36,8 +43,8 @@ function reply_row(array $row): array
         'channel' => $row['channel'] ?? 'reply',
         'text' => $row['text'],
         'quickReplies' => ($row['quickReplies'] ?? null) === null ? null : array_values(json_decode((string) $row['quickReplies'], true) ?: []),
-        'status' => $row['status'],
-        'error' => $row['error'],
+        'status' => $queued ? 'sending' : $row['status'],
+        'error' => $queued ? null : $row['error'],
         'decidedBy' => $row['decidedBy'] === null ? null : (int) $row['decidedBy'],
         'externalId' => $row['externalId'] ?? null,
         'customerReaction' => $row['customerReaction'] ?? null,
@@ -315,9 +322,6 @@ function apply_rules_to_unanswered(): array
     return ['drafted' => $drafted, 'updated' => $updated];
 }
 
-const TELEGRAM_PAGE = 'telegram';
-const TELEGRAM_QUEUED = 'در صف تلگرام؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود';
-
 function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null): array
 {
     $reply = get_reply($replyId);
@@ -327,8 +331,7 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
 
     $text = trim($editedText ?? $reply['text']);
-    // Telegram chats (telegram-bridge.php) are delivered by the Sepand Core, not Instagram: the reply is
-    // left "failed" without calling Meta, which is what the bridge's outbox picks up within a minute.
+    // Queued for the Telegram bridge without calling Meta (see TELEGRAM_QUEUED).
     if ($event['accountId'] === TELEGRAM_PAGE && $text !== '') {
         db()->prepare("UPDATE replies SET text = ?, status = 'failed', error = ?, decidedBy = ? WHERE id = ?")->execute([$text, TELEGRAM_QUEUED, $operatorId, $replyId]);
         return ['ok' => true];
@@ -574,6 +577,7 @@ function list_approvals(): array
     $items = [];
     foreach ($rows as $row) {
         $reply = reply_row($row);
+        if ($reply['status'] === 'sending') continue; // a Telegram reply already approved, waiting for the bridge
         $s = $style($reply['ruleId']);
         $items[] = [
             'id' => $reply['id'],
