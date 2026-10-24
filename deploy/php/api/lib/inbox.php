@@ -315,6 +315,9 @@ function apply_rules_to_unanswered(): array
     return ['drafted' => $drafted, 'updated' => $updated];
 }
 
+const TELEGRAM_PAGE = 'telegram';
+const TELEGRAM_QUEUED = 'در صف تلگرام؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود';
+
 function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null): array
 {
     $reply = get_reply($replyId);
@@ -324,6 +327,12 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
 
     $text = trim($editedText ?? $reply['text']);
+    // Telegram chats (telegram-bridge.php) are delivered by the Sepand Core, not Instagram: the reply is
+    // left "failed" without calling Meta, which is what the bridge's outbox picks up within a minute.
+    if ($event['accountId'] === TELEGRAM_PAGE && $text !== '') {
+        db()->prepare("UPDATE replies SET text = ?, status = 'failed', error = ?, decidedBy = ? WHERE id = ?")->execute([$text, TELEGRAM_QUEUED, $operatorId, $replyId]);
+        return ['ok' => true];
+    }
     $buttons = $reply['quickReplies'] ?: null;
     // Always as the page the message came to, whatever page the dashboard shows.
     $send = function (string $body, ?array $quickReplies) use ($reply, $event): array {
