@@ -109,8 +109,8 @@ export function signBridge(secret: string, time: string, body: string): Promise<
 }
 
 /** Webhook secret derived from the bot token, so there is no extra secret to store. */
-export async function webhookSecret(botToken: string): Promise<string> {
-  return (await hmacHex(botToken, "sepand-telegram-webhook")).slice(0, 48);
+export async function webhookSecret(botToken: string, label = "sepand-telegram-webhook"): Promise<string> {
+  return (await hmacHex(botToken, label)).slice(0, 48);
 }
 
 export function safeEqual(a: string, b: string): boolean {
