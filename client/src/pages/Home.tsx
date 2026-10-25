@@ -1,21 +1,27 @@
-import { useState } from "react";
-import { BarChart3, ChevronLeft, Inbox, Instagram, Library, LogIn, LogOut, Settings2, ShieldCheck, Workflow } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { BarChart3, ChevronLeft, ImageIcon, Inbox, Library, LogIn, LogOut, MessageCircle, MessageSquareText, RefreshCw, Settings2, ShieldCheck, Workflow } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { AnalyticsView } from "./inbox/AnalyticsView";
 import { AutomationView } from "./inbox/AutomationView";
 import { InboxView } from "./inbox/InboxView";
+import { PageSwitcher } from "./inbox/PageSwitcher";
+import { PostsView } from "./inbox/PostsView";
 import { SettingsView } from "./inbox/SettingsView";
 import { TemplatesView } from "./inbox/TemplatesView";
-import { faNum, IconButton, relativeTime } from "./inbox/ui";
+import { errorMessage, faNum, IconButton, relativeTime } from "./inbox/ui";
+import { APP_BUILD } from "@/version";
 
-type Tab = "inbox" | "automation" | "templates" | "analytics" | "settings";
+type Tab = "comments" | "dms" | "posts" | "automation" | "templates" | "analytics" | "settings";
 
 const POLL_MS = 15_000;
+const LOCAL_AUTH = import.meta.env.VITE_AUTH_MODE === "local";
 
 const navItems: { id: Tab; label: string; icon: typeof Inbox }[] = [
-  { id: "inbox", label: "صندوق ورودی", icon: Inbox },
+  { id: "comments", label: "کامنت‌ها", icon: MessageSquareText },
+  { id: "dms", label: "دایرکت‌ها", icon: MessageCircle },
+  { id: "posts", label: "پست‌ها", icon: ImageIcon },
   { id: "automation", label: "اتوماسیون", icon: Workflow },
   { id: "templates", label: "قالب پاسخ‌ها", icon: Library },
   { id: "analytics", label: "تحلیل عملکرد", icon: BarChart3 },
@@ -35,9 +41,29 @@ function Gate({ title, body, action }: { title: string; body: string; action?: R
   );
 }
 
+function LoginForm() {
+  const utils = trpc.useUtils();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const login = trpc.auth.login.useMutation({ onSuccess: () => utils.auth.me.invalidate() });
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    login.mutate({ username, password });
+  };
+  return (
+    <form className="login-form" onSubmit={submit}>
+      <label>نام کاربری<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" dir="ltr" required /></label>
+      <label>رمز عبور<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" dir="ltr" required /></label>
+      {login.error && <span className="error-text">{errorMessage(login.error)}</span>}
+      <button className="primary-button" type="submit" disabled={login.isPending}><LogIn size={16} /> {login.isPending ? "در حال ورود..." : "ورود"}</button>
+    </form>
+  );
+}
+
 export default function Home() {
   const { user, loading, logout } = useAuth();
   if (loading) return <Gate title="سپند Inbox" body="در حال بارگذاری..." />;
+  if (!user && LOCAL_AUTH) return <Gate title="ورود به سپند Inbox" body="برای مشاهده پیام‌ها و پاسخ‌گویی وارد شوید." action={<LoginForm />} />;
   if (!user) {
     return <Gate title="ورود به سپند Inbox" body="برای مشاهده پیام‌ها و پاسخ‌گویی وارد شوید." action={<button className="primary-button" onClick={() => startLogin()}><LogIn size={16} /> ورود</button>} />;
   }
@@ -48,18 +74,32 @@ export default function Home() {
 }
 
 function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => void }) {
-  const [tab, setTab] = useState<Tab>("inbox");
+  const [tab, setTab] = useState<Tab>("comments");
+  // Where «بازگشت» and template "use" go: the inbox view the operator was last in.
+  const [lastInbox, setLastInbox] = useState<"comments" | "dms">("comments");
+  const go = (next: Tab) => {
+    if (next === "comments" || next === "dms") setLastInbox(next);
+    setTab(next);
+  };
   const [composer, setComposer] = useState("");
 
-  const status = trpc.inbox.status.useQuery();
+  // Polled so an update installed on the server is noticed without a manual refresh.
+  const status = trpc.inbox.status.useQuery(undefined, { refetchInterval: 5 * 60_000 });
+  const serverBuild = status.data?.serverVersion;
+  const stale = Boolean(serverBuild && serverBuild.commit !== APP_BUILD.commit);
   const threads = trpc.inbox.threads.useQuery(undefined, { refetchInterval: POLL_MS });
   const approvals = trpc.approvals.list.useQuery(undefined, { refetchInterval: POLL_MS });
   const stats = trpc.inbox.stats.useQuery(undefined, { enabled: tab === "analytics" });
 
-  const unread = threads.data?.filter((thread) => thread.unread).length ?? 0;
+  const unreadOf = (kind: "comment" | "dm") => threads.data?.filter((thread) => thread.kind === kind && thread.unread).length ?? 0;
   const pending = approvals.data?.length ?? 0;
   const connected = Boolean(status.data?.metaConfigured);
-  const badge = (id: Tab) => (id === "inbox" && unread ? faNum(unread) : id === "automation" && pending ? faNum(pending) : null);
+  // The page the server shows (the one asked for, or the first connected page).
+  const activePage = status.data?.accountId ?? null;
+  const badge = (id: Tab) => {
+    const count = id === "comments" ? unreadOf("comment") : id === "dms" ? unreadOf("dm") : id === "automation" ? pending : 0;
+    return count ? faNum(count) : null;
+  };
 
   return (
     <div className="app-shell" dir="rtl">
@@ -68,18 +108,22 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
           <div className="brand-mark"><span>س</span></div>
           <div><strong>سپند</strong><span>INBOX STUDIO</span></div>
         </div>
-        <div className="account-card">
-          <div className="account-avatar"><Instagram size={18} /></div>
-          <div className="account-meta"><b>@sepandsteel</b><span>Sepand Steel · {connected ? "متصل" : "پیکربندی نشده"}</span></div>
-          {connected && <span className="online-dot" />}
-        </div>
+        <PageSwitcher
+          activeId={activePage}
+          connected={connected}
+          onAddPage={() => {
+            go("settings");
+            // After the settings page renders.
+            setTimeout(() => document.getElementById("pages-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+          }}
+        />
         <div className="workspace-label">میز کار</div>
         <nav className="side-nav">
           {navItems.map((item) => {
             const Icon = item.icon;
             const count = badge(item.id);
             return (
-              <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => setTab(item.id)}>
+              <button key={item.id} className={`nav-item ${tab === item.id ? "active" : ""}`} onClick={() => go(item.id)}>
                 <Icon size={18} strokeWidth={1.9} />
                 <span>{item.label}</span>
                 {count && <small>{count}</small>}
@@ -97,10 +141,12 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             <div><b>{userName}</b><span>دسترسی کامل</span></div>
             <IconButton label="خروج" onClick={onLogout}><LogOut size={16} /></IconButton>
           </div>
+          <div className="app-version" dir="ltr" title={`ساخته شده ${new Date(APP_BUILD.builtAt).toLocaleString("fa-IR")}`}>v{APP_BUILD.version} · {APP_BUILD.commit}</div>
         </div>
       </aside>
 
-      <main className="main-area">
+      {/* Remounted per page, so no open conversation or draft carries over to another page. */}
+      <main className="main-area" key={activePage ?? "none"}>
         <header className="topbar">
           <div className="breadcrumb"><span>سپند</span><ChevronLeft size={15} /><b>{navItems.find((item) => item.id === tab)?.label}</b></div>
           <div className="top-actions">
@@ -108,20 +154,29 @@ function Dashboard({ userName, onLogout }: { userName: string; onLogout: () => v
             <div className="top-avatar">{userName.charAt(0)}</div>
           </div>
         </header>
+        {stale && (
+          <div className="update-banner">
+            <RefreshCw size={16} />
+            <span>نسخهٔ تازه‌ای روی سرور نصب شده (v{serverBuild!.version} · {serverBuild!.commit})؛ این صفحه هنوز v{APP_BUILD.version} است.</span>
+            <button className="primary-button" onClick={() => window.location.reload()}>بارگذاری نسخهٔ جدید</button>
+          </div>
+        )}
 
-        {tab === "inbox" && (
+        {(tab === "comments" || tab === "dms") && (
           <InboxView
+            kind={tab === "comments" ? "comment" : "dm"}
             threads={threads.data ?? []}
             approvals={approvals.data ?? []}
             loading={threads.isLoading}
             autoReply={Boolean(status.data?.autoReply)}
             composer={composer}
             setComposer={setComposer}
-            onOpenAutomation={() => setTab("automation")}
+            onOpenAutomation={() => go("automation")}
           />
         )}
-        {tab === "automation" && <AutomationView approvals={approvals.data ?? []} autoReply={Boolean(status.data?.autoReply)} onBack={() => setTab("inbox")} />}
-        {tab === "templates" && <TemplatesView onUse={(text) => { setTab("inbox"); setComposer(text); }} />}
+        {tab === "posts" && <PostsView />}
+        {tab === "automation" && <AutomationView approvals={approvals.data ?? []} autoReply={Boolean(status.data?.autoReply)} onBack={() => go(lastInbox)} />}
+        {tab === "templates" && <TemplatesView onUse={(text) => { go(lastInbox); setComposer(text); }} />}
         {tab === "analytics" && <AnalyticsView stats={stats.data} />}
         {tab === "settings" && <SettingsView status={status.data} />}
       </main>

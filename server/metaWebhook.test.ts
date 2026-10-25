@@ -132,4 +132,41 @@ describe("POST /api/meta/webhook", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("42");
   });
+
+  it("accepts the verify token with stray whitespace from copying", async () => {
+    const res = await fetch(`${base}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(" sepand-secret\n")}&hub.challenge=43`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("43");
+  });
+
+  it("rejects a wrong verify token but tells a browser visit that the endpoint works", async () => {
+    expect((await fetch(`${base}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=42`)).status).toBe(403);
+    const res = await fetch(base);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("webhook is up");
+  });
+});
+
+describe("tokenHint", () => {
+  it("tells tokens apart without revealing them", async () => {
+    const { tokenHint } = await import("./metaWebhook");
+    expect(tokenHint(" abcdefghij ")).toBe("ab…ij (10)");
+    expect(tokenHint("abc")).toBe("••• (3)");
+    expect(tokenHint(undefined)).toBe("(empty)");
+  });
+});
+
+describe("describePayload", () => {
+  it("lists accounts, fields and item count for the webhook log", async () => {
+    const { describePayload } = await import("./metaWebhook");
+    expect(
+      describePayload({
+        object: "instagram",
+        entry: [
+          { id: "178", changes: [{ field: "comments", value: {} }, { field: "mentions", value: {} }] },
+          { id: "179", messaging: [{ sender: { id: "1" } }] },
+        ],
+      }),
+    ).toEqual({ accounts: ["178", "179"], fields: ["comments", "mentions", "messaging"], items: 3 });
+  });
 });

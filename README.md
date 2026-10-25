@@ -13,7 +13,7 @@
 
 ارسال خودکار پیش‌فرض خاموش است. با `META_AUTO_REPLY=true` فقط قوانین با اقدام «ارسال مستقیم» خودکار ارسال می‌شوند؛ قوانین «نیازمند تأیید» (قیمت، تخفیف، قرارداد، تحویل) همیشه منتظر اپراتور می‌مانند.
 
-داشبورد فقط برای کاربران با نقش `admin` باز است (مالک برنامه، `OWNER_OPEN_ID`، به‌طور خودکار admin می‌شود).
+داشبورد فقط برای کاربران با نقش `admin` باز است. با `AUTH_MODE=local` ورود با `ADMIN_USERNAME` / `ADMIN_PASSWORD` انجام می‌شود (۵ تلاش ناموفق = ۱۵ دقیقه مسدودی)؛ در غیر این صورت ورود Manus استفاده می‌شود و مالک برنامه (`OWNER_OPEN_ID`) admin است.
 
 ## راه‌اندازی
 
@@ -34,6 +34,10 @@ pnpm dev
 
 توکن و secretها را در فایل commitشده نگذارید؛ در محیط تولید از secret manager میزبان استفاده کنید. access log پراکسی نباید query string درخواست GET وب‌هوک (که verify token دارد) را ثبت کند.
 
+### نصب روی هاست cPanel
+
+`pnpm package:cpanel` فایل `release/sepand-inbox-cpanel.zip` را می‌سازد: سرور با همهٔ وابستگی‌ها در یک فایل، داشبورد با ورود نام کاربری/رمز، و `database/schema.sql`. مراحل نصب در [README-DEPLOY-FA.md](README-DEPLOY-FA.md) است.
+
 ## دستورات
 
 | دستور | کاربرد |
@@ -43,6 +47,7 @@ pnpm dev
 | `pnpm check` | بررسی TypeScript |
 | `pnpm build` / `pnpm start` | ساخت و اجرای نسخهٔ تولید |
 | `pnpm db:push` | تولید و اجرای migrationها |
+| `pnpm package:cpanel` | ساخت بستهٔ zip برای cPanel |
 
 ## ساختار
 
