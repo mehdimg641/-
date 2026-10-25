@@ -26,15 +26,18 @@ function event_row(array $row): array
     ];
 }
 
-// Telegram chats (telegram-bridge.php) are delivered by the Sepand Core, not Instagram. The bridge's
-// outbox picks up replies left "failed", so a queued one is stored that way with TELEGRAM_QUEUED as
-// its error, and shown as "sending" so the operator never sees a failure that is not one.
-const TELEGRAM_PAGE = 'telegram';
-const TELEGRAM_QUEUED = 'در صف تلگرام؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود';
+// Telegram and Bale chats (telegram-bridge.php, bale-bridge.php) are delivered by the Sepand Core,
+// not Instagram. A bridge's outbox picks up replies left "failed", so a queued one is stored that
+// way with its page's note below as the error, and shown as "sending" so the operator never sees a
+// failure that is not one. Page id → that note.
+const BRIDGE_PAGES = [
+    'telegram' => 'در صف تلگرام؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود',
+    'bale' => 'در صف بله؛ تا یک دقیقهٔ دیگر خودکار فرستاده می‌شود',
+];
 
 function reply_row(array $row): array
 {
-    $queued = $row['status'] === 'failed' && $row['error'] === TELEGRAM_QUEUED;
+    $queued = $row['status'] === 'failed' && in_array($row['error'], BRIDGE_PAGES, true);
     return [
         'id' => (int) $row['id'],
         'eventId' => (int) $row['eventId'],
@@ -331,9 +334,9 @@ function send_reply(int $replyId, ?int $operatorId, ?string $editedText = null):
     if (!claim_reply($replyId, ['pending', 'failed'])) throw new ApiError('CONFLICT', 'این پاسخ قبلاً ارسال یا رد شده است');
 
     $text = trim($editedText ?? $reply['text']);
-    // Queued for the Telegram bridge without calling Meta (see TELEGRAM_QUEUED).
-    if ($event['accountId'] === TELEGRAM_PAGE && $text !== '') {
-        db()->prepare("UPDATE replies SET text = ?, status = 'failed', error = ?, decidedBy = ? WHERE id = ?")->execute([$text, TELEGRAM_QUEUED, $operatorId, $replyId]);
+    // Queued for the page's bridge without calling Meta (see BRIDGE_PAGES).
+    if (isset(BRIDGE_PAGES[$event['accountId']]) && $text !== '') {
+        db()->prepare("UPDATE replies SET text = ?, status = 'failed', error = ?, decidedBy = ? WHERE id = ?")->execute([$text, BRIDGE_PAGES[$event['accountId']], $operatorId, $replyId]);
         return ['ok' => true];
     }
     $buttons = $reply['quickReplies'] ?: null;
@@ -577,7 +580,7 @@ function list_approvals(): array
     $items = [];
     foreach ($rows as $row) {
         $reply = reply_row($row);
-        if ($reply['status'] === 'sending') continue; // a Telegram reply already approved, waiting for the bridge
+        if ($reply['status'] === 'sending') continue; // already approved, waiting for a messenger bridge
         $s = $style($reply['ruleId']);
         $items[] = [
             'id' => $reply['id'],
